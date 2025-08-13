@@ -1,111 +1,782 @@
-// ESP32 version mejorado en español con documentación Doxygen
-#include "VoiceRecognitionV3.h"
-#define Version "0.2"
-// Definiciones de pines de comunicación con el módulo de voz
-#define PIN_TX 17           ///< TX2 del ESP32 conectado al RX del módulo de voz
-#define PIN_RX 16           ///< RX2 del ESP32 conectado al TX del módulo de voz
-#define LED_INTERNO 2       ///< LED interno del ESP32 (GPIO2)
-#define SALIDA_0 18         ///< Salida correspondiente al comando 'Jarvis'
-#define SALIDA_1 19         ///< Salida correspondiente al comando 'Abrir'
-#define SALIDA_2 20         ///< Salida correspondiente al comando 'Cerrar'
+// ESP32 versión mejorado en español con documentación Doxygen, reproducción MP3 desde SD y control de servo sin bloqueos
+#include "VoiceRecognitionV3.h"           ///< Incluimos la librería para el módulo de reconocimiento de voz VR3
+#include "AudioFileSourceSD.h"            ///< Incluimos la librería para leer archivos de audio desde la tarjeta SD
+#include "AudioGeneratorMP3.h"            ///< Incluimos la librería que decodifica los archivos MP3
+#include "AudioOutputI2SNoDAC.h"          ///< Incluimos la librería para la salida de audio por I2S (sin el DAC integrado)
+#include "FS.h"                           ///< Incluimos la librería base del sistema de archivos
+#include "SD.h"                           ///< Incluimos la librería para interactuar con la tarjeta SD
+#include "SPI.h"                          ///< Incluimos la librería para el protocolo de comunicación SPI
+#include <ESP32Servo.h>                   ///< Incluimos la librería de Servo para ESP32
 
-VR myVR(PIN_RX, PIN_TX);    ///< Instancia del módulo de reconocimiento de voz
-uint8_t records[] = {0, 1, 2}; ///< Registros que se van a cargar
-uint8_t buf[65];              ///< Buffer para almacenar datos recibidos
+#define Version "0.5"                     ///< Definimos una constante para la versión del sketch (actualizada)
+
+// Definiciones de pines de comunicación con el módulo de voz
+#define PIN_TX 17                         ///< Definimos el pin TX2 del ESP32, que se conecta al RX del módulo de voz
+#define PIN_RX 16                         ///< Definimos el pin RX2 del ESP32, que se conecta al TX del módulo de voz
+
+// Pines de E/S (Entrada/Salida)
+#define LED_INTERNO 2                     ///< Definimos el pin del LED interno del ESP32
+#define PIN_ENTRENAMIENTO 34              ///< Definimos el pin de entrada para activar el modo de entrenamiento
+
+// Salidas asignadas para cada comando
+#define SALIDA_0 25                       ///< Definimos el pin de salida para el comando 'Jarvis'
+#define SALIDA_1 26                       ///< Definimos el pin de salida para el comando 'Abrir'
+#define SALIDA_2 27                       ///< Definimos el pin de salida para el comando 'Cerrar'
+
+// Pines y configuración de la tarjeta SD
+#define CS 5                              ///< Definimos el pin CS (Chip Select) para la tarjeta SD
+
+// Pines y configuración del servo
+#define SERVO_PIN 32                      ///< Definimos el pin al que conectaremos el servo
+#define SERVO_NEUTRAL 90                  ///< Definimos la posición neutra (90 grados) del servo
+#define SERVO_STEP_DEG 1                  ///< Definimos cuántos grados se moverá el servo en cada paso
+#define SERVO_STEP_MS 15                  ///< Definimos el tiempo de espera en milisegundos entre cada paso
+
+// Instancia del reconocimiento de voz (ELECHOUSE)
+VR myVR(PIN_RX, PIN_TX);                  ///< Creamos un objeto de la clase VR para controlar el módulo de voz
+
+// Registros de voz que vamos a cargar (0,1,2)
+uint8_t records[] = {0, 1, 2};            ///< Creamos un arreglo con los índices de los registros que cargaremos
+uint8_t buf[65];                          ///< Creamos un buffer para guardar los datos recibidos del módulo VR
+
+// Objetos para la reproducción de audio desde SD
+AudioGeneratorMP3 mp3;                    ///< Creamos un objeto para decodificar MP3
+AudioFileSourceSD fuente;                 ///< Creamos un objeto para leer el archivo desde la SD
+AudioOutputI2SNoDAC salidaAudio;          ///< Creamos un objeto para la salida de audio
+bool reproduccionEnCurso = false;         ///< Una bandera para saber si un audio está sonando
+String archivoAudioActual = "";           ///< Una cadena de texto para guardar la ruta del archivo a reproducir
+
+// Variables para parpadeo de LED sin bloqueo
+bool parpadeando = false;                   ///< Indica si el LED debe parpadear
+int parpadeosObjetivo = 0;                  ///< El número total de parpadeos que queremos
+int parpadeosRealizados = 0;                ///< El contador de parpadeos que ya se han hecho
+bool estadoLed = false;                     ///< El estado actual del LED (encendido/apagado)
+unsigned long ultimoParpadeoMillis = 0;     ///< Guarda el último momento en que el LED cambió de estado
+unsigned long intervaloParpadeo = 200;      ///< La duración del intervalo entre cambios de estado
+
+// Variables para salidas pulsadas sin bloqueo
+unsigned long salidaOffMillis[3] = {0, 0, 0}; ///< Guarda el tiempo en que cada salida debe apagarse
+
+// Variables y objeto servo para movimiento no bloqueante
+Servo servo;                              ///< Creamos un objeto de la clase Servo
+int servoAnguloActual = SERVO_NEUTRAL;    ///< Guardamos el ángulo actual del servo
+int servoAnguloObjetivo = SERVO_NEUTRAL;  ///< Guardamos el ángulo al que el servo debe llegar
+unsigned long ultimoMovimientoServoMillis = 0; ///< Guarda el último momento en que el servo se movió
+bool servoMoviendose = false;             ///< Una bandera para saber si el servo está en movimiento
+
+// Variables para el modo de entrenamiento
+#define PIN_ENTRENAMIENTO_UMBRAL 3000     ///< Definimos 3000ms (3 segundos) como el umbral para activar el entrenamiento
+#define TIEMPO_ESPERA_ENTRENAMIENTO 8000  ///< Definimos el tiempo que esperaremos a que se diga la palabra
+#define TIEMPO_CONFIRMACION 5000          ///< Duración del parpadeo rápido de confirmación
+#define INTERVALO_PARPADEO_RAPIDO 100     ///< Intervalo de 100ms para el parpadeo rápido
+
+bool modoEntrenamiento = false;           ///< Bandera para saber si el sistema está en modo de entrenamiento
+int registroActualEntrenamiento = 0;      ///< El índice del registro que estamos entrenando
+unsigned long inicioPulsoEntrenamiento = 0; ///< Guarda el tiempo en que se detectó el pulso alto en el pin
+unsigned long inicioEsperaEntrenamiento = 0;///< Guarda el tiempo en que empezó la espera para la voz de entrenamiento
+bool confirmacionVisual = false;          ///< Bandera para el parpadeo rápido de confirmación
+
+// Variables para el comando serial "entrenar"
+String serialCommand = "";                ///< Cadena para guardar los comandos recibidos por la consola
+
+// Declaraciones de funciones (forward declarations)
+bool cargarRegistros();
+void leerRespuestaModulo();
+String obtenerSignaturaRegistro(int registro);
+void mostrarInstruccionEntrenamiento();
+void entrenarSiguienteRegistro(bool exito);
+void manejarModoEntrenamiento();
+void iniciarModoEntrenamiento();
+void finalizarModoEntrenamiento();
+void iniciarParpadeoEntrenamiento(int registro);
+void verificarPinEntrenamiento();
+void manejarModoOperacionNormal();
+void iniciarParpadeo(int registro);
+void actualizarParpadeo();
+void ejecutarSalidaPulsada(int registro);
+void actualizarSalidas();
+void iniciarMovimientoServoAbrir();
+void iniciarMovimientoServoCerrar();
+void actualizarServo();
+void manejarReproduccionAudio();
+void reproducirAudio(const char *ruta);
+bool entrenarConFirmaCargado();
 
 /**
- * @brief Configuración inicial del ESP32
- * Inicializa la comunicación serial, el módulo de voz, pines y carga los comandos.
+ * @brief Obtiene la signatura correspondiente a un registro específico.
+ *
+ * @param registro Número de registro (0, 1, o 2)
+ * @retval String con la signatura correspondiente
+ */
+String obtenerSignaturaRegistro(int registro) {
+  switch(registro) {
+    case 0:
+      return "jarvis";    ///< Signatura para el registro 0
+    case 1:
+      return "Abrir";     ///< Signatura para el registro 1
+    case 2:
+      return "Cerrar";    ///< Signatura para el registro 2
+    default:
+      return "";          ///< Signatura vacía para registros no válidos
+  }
+}
+
+/**
+ * @brief Muestra la instrucción específica de entrenamiento según el registro actual.
+ *
+ * Esta función informa al usuario exactamente qué palabra debe decir para entrenar
+ * el registro correspondiente.
+ */
+void mostrarInstruccionEntrenamiento() {
+  String signatura = obtenerSignaturaRegistro(registroActualEntrenamiento);
+  Serial.print("Registro ");
+  Serial.print(registroActualEntrenamiento);
+  Serial.print(": Diga la palabra '");
+  Serial.print(signatura);
+  Serial.println("' cuando el LED se encienda.");
+}
+
+/**
+ * @brief Función que carga automáticamente los registros de voz 0, 1 y 2
+ *        Reemplaza el método myVR.load() que no funciona correctamente
+ *        Equivale a enviar el comando "30 0 1 2" por consola
+ * @param Ninguno
+ * @retval true si el comando se envió correctamente, false en caso contrario
+ */
+bool cargarRegistros() {
+  // Array que contiene los bytes del comando "30 0 1 2" en formato hexadecimal
+  // 0x30 = comando para cargar registros
+  // 0x00 = registro 0
+  // 0x01 = registro 1  
+  // 0x02 = registro 2
+  uint8_t bufferComando[4] = {0x30, 0x00, 0x01, 0x02};
+  
+  // Variable para almacenar la longitud del comando (4 bytes en este caso)
+  int longitudComando = 4;
+  
+  // Mostrar en el monitor serial el comando que se va a enviar
+  // El símbolo '>' indica que es un comando saliente hacia el módulo
+  Serial.print("> ");
+  
+  // Mostrar el contenido del comando en formato hexadecimal legible
+  // Esta función convierte cada byte a su representación hexadecimal (ej: 0x30 -> "30")
+  myVR.writehex(bufferComando, longitudComando);
+  
+  // Enviar efectivamente el paquete de datos al módulo de reconocimiento de voz
+  // Esta función transmite los bytes del comando a través de la comunicación serial
+  // Nota: send_pkt() es void, no retorna bool, así que asumimos éxito si no hay excepción
+  myVR.send_pkt(bufferComando, longitudComando);
+  
+  // Agregar salto de línea después del comando hexadecimal mostrado
+  Serial.println();
+  
+  // Informar al usuario qué registros se están cargando
+  Serial.println("Cargando registros de voz 0, 1 y 2...");
+  
+  // Esperar un breve momento para que el módulo procese el comando
+  // Delay de 100 milisegundos para dar tiempo al módulo de responder
+  delay(100);
+  
+  // Leer la respuesta del módulo de reconocimiento de voz
+  leerRespuestaModulo();
+  
+  // Retornar true ya que send_pkt no retorna error
+  return true;
+}
+
+/**
+ * @brief Función auxiliar que lee y muestra la respuesta del módulo
+ *        Implementa la misma lógica de lectura que el código original
+ * @param Ninguno
+ * @retval Ninguno
+ */
+void leerRespuestaModulo() {
+  // Buffer para almacenar los datos recibidos del módulo
+  uint8_t bufferRespuesta[400];
+  
+  // Array para almacenar la longitud de cada paquete recibido
+  uint8_t longitudesPaquetes[32];
+  
+  // Variables de control para el procesamiento de paquetes
+  int longitudTotal = 0;    // Longitud total de datos recibidos
+  int indicePaquete = 0;    // Índice del paquete actual
+  int resultadoRecepcion;   // Resultado de cada operación de recepción
+  
+  // Bucle infinito para recibir todos los paquetes disponibles
+  while(true) {
+    // Intentar recibir un paquete del módulo con timeout de 50ms
+    // La función receive_pkt() lee datos del módulo y retorna la cantidad de bytes recibidos
+    resultadoRecepcion = myVR.receive_pkt(bufferRespuesta + longitudTotal, 50);
+    
+    // Si se recibieron datos (resultadoRecepcion > 0)
+    if(resultadoRecepcion > 0) {
+      // Acumular la longitud total de datos recibidos
+      longitudTotal += resultadoRecepcion;
+      
+      // Guardar la longitud de este paquete específico
+      longitudesPaquetes[indicePaquete] = resultadoRecepcion;
+      
+      // Incrementar el contador de paquetes
+      indicePaquete++;
+    } else {
+      // Si no hay más datos disponibles, salir del bucle
+      break;
+    }
+  }
+  
+  // Si se recibieron paquetes, mostrarlos en el monitor serial
+  if(indicePaquete > 0) {
+    // Reinicializar la longitud para procesar paquete por paquete
+    longitudTotal = 0;
+    
+    // Iterar a través de cada paquete recibido
+    for(int i = 0; i < indicePaquete; i++) {
+      // Mostrar símbolo '<' para indicar que es una respuesta del módulo
+      Serial.print("< ");
+      
+      // Mostrar el contenido del paquete en formato hexadecimal
+      // bufferRespuesta + longitudTotal apunta al inicio del paquete actual
+      myVR.writehex(bufferRespuesta + longitudTotal, longitudesPaquetes[i]);
+      
+      // Avanzar el puntero para el siguiente paquete
+      longitudTotal += longitudesPaquetes[i];
+      
+      // Agregar salto de línea después de cada paquete
+      Serial.println();
+    }
+    
+    // Informar que se completó la carga de registros
+    Serial.println("Respuesta del módulo recibida.");
+  } else {
+    // Si no se recibió respuesta del módulo
+    Serial.println("No se recibió respuesta del módulo.");
+  }
+}
+
+/**
+ * @brief Configuración inicial del ESP32.
+ *
+ * Esta función se ejecuta una sola vez al encender el ESP32.
+ * Inicializa los pines, las comunicaciones, la tarjeta SD y el módulo de voz.
+ * Piensa en ella como la preparación antes de empezar a trabajar.
  */
 void setup() {
-  Serial.begin(115200); ///< Inicializa la consola serial a 115200 baudios
-  pinMode(LED_INTERNO, OUTPUT); ///< Configura el LED interno como salida
-  pinMode(SALIDA_0, OUTPUT); ///< Configura la salida 0 como salida
-  pinMode(SALIDA_1, OUTPUT); ///< Configura la salida 1 como salida
-  pinMode(SALIDA_2, OUTPUT); ///< Configura la salida 2 como salida
+  Serial.begin(115200);                   ///< Inicializamos la comunicación serial a 115200 baudios
 
-  Serial.println("Inicializando módulo de reconocimiento de voz...");
-  myVR.begin(9600);
-    Serial.println("Módulo de voz inicializado: /n Verificar que parpadee el led amarillo del modulo.");
+  // Configurar pines como salidas
+  pinMode(LED_INTERNO, OUTPUT);           ///< Establecemos el pin del LED interno como salida
+  pinMode(SALIDA_0, OUTPUT);              ///< Establecemos el pin de la salida 0 como salida
+  pinMode(SALIDA_1, OUTPUT);              ///< Establecemos el pin de la salida 1 como salida
+  pinMode(SALIDA_2, OUTPUT);              ///< Establecemos el pin de la salida 2 como salida
+  pinMode(PIN_ENTRENAMIENTO, INPUT);      ///< Establecemos el pin de entrenamiento como entrada
 
+  // Asegurar estado inicial de salidas
+  digitalWrite(LED_INTERNO, LOW);         ///< Apagamos el LED interno
+  digitalWrite(SALIDA_0, LOW);            ///< Apagamos la salida 0
+  digitalWrite(SALIDA_1, LOW);            ///< Apagamos la salida 1
+  digitalWrite(SALIDA_2, LOW);            ///< Apagamos la salida 2
 
-  // Cargar registros 0, 1 y 2
-  myVR.load(records, 3);
-  Serial.println("Registros cargados correctamente.");
- }
+  // Mensaje de bienvenida
+  Serial.println("Inicializando modulo de reconocimiento de voz..."); ///< Mensaje informativo
+  myVR.begin(9600);                       ///< Iniciamos la comunicación con el módulo de voz
+  Serial.println("Modulo de voz inicializado: Verificar que parpadee el led amarillo del modulo."); ///< Mensaje para verificar
+  
+  // Inicializar la tarjeta SD
+  Serial.println("Inicializando tarjeta SD..."); ///< Mensaje informativo
+  if (!SD.begin(CS)) {                    ///< Intentamos iniciar la tarjeta SD
+    Serial.println("Error: Tarjeta SD no encontrada o inicializacion fallida"); ///< Si falla, mostramos un error
+  } else {
+    Serial.println("Tarjeta SD inicializada correctamente."); ///< Si tiene éxito, lo confirmamos
+  }
+
+  salidaAudio.SetOutputModeMono(true);    ///< Configuramos la salida de audio en modo mono
+  servo.attach(SERVO_PIN);                ///< Conectamos el objeto Servo al pin del servo
+  servo.write(servoAnguloActual);         ///< Movemos el servo a su posición inicial
+  ultimoMovimientoServoMillis = millis(); ///< Guardamos el tiempo actual para el movimiento del servo
+
+  // Cargar registros por defecto (0, 1, 2) usando la nueva función
+  if (!entrenarConFirmaCargado()) {       ///< Comprobamos si hay registros entrenados
+     Serial.println("Cargando registros por defecto 0, 1, 2..."); ///< Si no hay, cargamos los por defecto
+     if (cargarRegistros()) {             ///< Usamos la nueva función cargarRegistros()
+       Serial.println("Registros por defecto cargados exitosamente."); ///< Confirmamos el éxito
+     } else {
+       Serial.println("Error al cargar registros por defecto."); ///< Informamos si hubo error
+     }
+  }
+
+  Serial.print("Version del firmware: "); Serial.println(Version); ///< Mostramos la versión
+  Serial.println("Dispositivo listo. Esperando comandos de voz o entrada de entrenamiento..."); ///< Mensaje de finalización de setup
+}
+
 /**
- * @brief Bucle principal del programa
- * Escucha comandos de voz y ejecuta acciones según el comando reconocido.
+ * @brief Bucle principal del programa.
+ *
+ * Esta función se ejecuta repetidamente.
+ * Se encarga de escuchar comandos de voz, verificar si se debe entrar en modo de entrenamiento,
+ * y de actualizar todas las tareas no bloqueantes como el parpadeo del LED, el movimiento del servo
+ * y la reproducción de audio. Es el "motor" del programa.
  */
 void loop() {
-  int ret = myVR.recognize(buf, 50); ///< Intenta reconocer un comando con timeout 50 ms
-  if (ret > 0) {
-    int registro = buf[1]; ///< Extrae el número de registro reconocido
-    switch (registro) {
+  if (Serial.available()) {               ///< Verificamos si hay datos en la consola serial
+      char c = Serial.read();             ///< Leemos un carácter de la consola
+      if (c == '\n') {                    ///< Si es un salto de línea...
+          String comando = serialCommand; ///< ...obtenemos el comando completo
+          serialCommand = "";             ///< ...y reiniciamos la cadena
+          comando.trim();                 ///< Eliminamos espacios extra
+          if (comando.equalsIgnoreCase("entrenar")) { ///< Si el comando es "entrenar"...
+              iniciarModoEntrenamiento(); ///< ...iniciamos el modo de entrenamiento
+          }
+      } else {
+          serialCommand += c;             ///< Si no es un salto de línea, agregamos el carácter al comando
+      }
+  }
+
+  if (modoEntrenamiento) {                ///< Si la bandera de entrenamiento está activa...
+    manejarModoEntrenamiento();           ///< ...ejecutamos la lógica del modo de entrenamiento
+  } else {                                ///< Si no...
+    manejarModoOperacionNormal();         ///< ...ejecutamos la lógica del modo normal
+  }
+
+  // Tareas no bloqueantes comunes
+  actualizarParpadeo();                   ///< Verificamos y actualizamos el parpadeo del LED
+  actualizarSalidas();                    ///< Verificamos y actualizamos las salidas pulsadas
+  actualizarServo();                      ///< Verificamos y actualizamos el movimiento del servo
+  manejarReproduccionAudio();             ///< Verificamos y actualizamos la reproducción de audio
+  verificarPinEntrenamiento();            ///< Verificamos el estado del pin de entrenamiento
+}
+
+/**
+ * @brief Maneja el modo de operación normal.
+ *
+ * Esta función se encarga de la lógica principal cuando el dispositivo está
+ * escuchando comandos de voz, sin estar en modo de entrenamiento.
+ * Escucha la respuesta del módulo de voz y realiza la acción correspondiente.
+ */
+void manejarModoOperacionNormal() {
+  int ret = myVR.recognize(buf, 50);      ///< Intentamos reconocer un comando con un tiempo de espera de 50ms
+  if (ret > 0) {                          ///< Si el valor de retorno es positivo, se reconoció un comando
+    int registro = buf[1];                ///< Obtenemos el índice del registro reconocido
+
+    switch (registro) {                   ///< Usamos un "switch" para decidir qué hacer según el registro
       case 0:
-        Serial.println("Comando reconocido: Jarvis");
-        parpadearLed(registro);
-        reproducir(registro);
-        break;
+        Serial.println("Comando reconocido: Jarvis"); ///< Mensaje en consola
+        iniciarParpadeo(registro);        ///< Iniciamos el parpadeo del LED para el registro 0
+        ejecutarSalidaPulsada(registro);  ///< Activamos la salida correspondiente
+        archivoAudioActual = "/jarvis.mp3"; ///< Guardamos el nombre del archivo de audio
+        break;                            ///< Salimos del switch
       case 1:
         Serial.println("Comando reconocido: Abrir mascara");
-        parpadearLed(registro);
-        reproducir(registro);
+        iniciarParpadeo(registro);
+        ejecutarSalidaPulsada(registro);
+        archivoAudioActual = "/abrir.mp3";
+        iniciarMovimientoServoAbrir();    ///< Iniciamos el movimiento del servo para "abrir"
         break;
       case 2:
         Serial.println("Comando reconocido: Cerrar mascara");
-        parpadearLed(registro);
-        reproducir(registro);
+        iniciarParpadeo(registro);
+        ejecutarSalidaPulsada(registro);
+        archivoAudioActual = "/cerrar.mp3";
+        iniciarMovimientoServoCerrar();   ///< Iniciamos el movimiento del servo para "cerrar"
         break;
       default:
-        Serial.println("Comando no reconocido");
+        Serial.println("Comando no reconocido"); ///< Si el registro no coincide, mostramos este mensaje
     }
   }
 }
 
 /**
- * @brief Parpadea el LED interno del ESP32
- * @param veces Cantidad de veces que parpadeará el LED (igual al número de registro + 1)
+ * @brief Verifica si el pin de entrenamiento ha estado en alto por 3 segundos.
+ *
+ * Esta función es clave para la activación no bloqueante del modo de entrenamiento.
+ * Se ejecuta en el bucle principal y utiliza `millis()` para medir el tiempo del pulso
+ * sin detener el resto del programa.
  */
-void parpadearLed(int veces) {
-  for (int i = 0; i < veces + 1; i++) {
-    digitalWrite(LED_INTERNO, HIGH); ///< Enciende el LED
-    delay(200);                      ///< Espera 200 milisegundos
-    digitalWrite(LED_INTERNO, LOW);  ///< Apaga el LED
-    delay(200);                      ///< Espera 200 milisegundos
+void verificarPinEntrenamiento() {
+  if (digitalRead(PIN_ENTRENAMIENTO) == HIGH) { ///< Si el pin de entrenamiento está en HIGH...
+    if (inicioPulsoEntrenamiento == 0) {  ///< Si es la primera vez que lo detectamos...
+      inicioPulsoEntrenamiento = millis(); ///< ...guardamos el tiempo actual
+    } else if (millis() - inicioPulsoEntrenamiento >= PIN_ENTRENAMIENTO_UMBRAL) { ///< Si ha pasado el umbral de 3 segundos...
+      if (!modoEntrenamiento) {           ///< ...y no estamos ya en modo de entrenamiento...
+        iniciarModoEntrenamiento();       ///< ...lo activamos
+      }
+      inicioPulsoEntrenamiento = 0;       ///< Reiniciamos el contador para evitar activarlo de nuevo
+    }
+  } else {                                ///< Si el pin no está en HIGH...
+    inicioPulsoEntrenamiento = 0;         ///< ...reiniciamos el contador
   }
 }
 
 /**
- * @brief Ejecuta la acción correspondiente al comando reconocido
- * @param registro Número del registro reconocido (0 = Jarvis, 1 = Abrir, 2 = Cerrar)
+ * @brief Inicia el modo de entrenamiento.
+ *
+ * Establece todas las variables necesarias para el modo de entrenamiento, como las banderas
+ * `modoEntrenamiento` y `confirmacionVisual`, y muestra los mensajes iniciales en la consola.
  */
-void reproducir(int registro) {
-  Serial.print("Ejecutando acción para registro: ");
-  Serial.println(registro);
+void iniciarModoEntrenamiento() {
+  Serial.println(">>> Modo de entrenamiento activado <<<"); ///< Mensaje informativo
+  modoEntrenamiento = true;               ///< Activamos la bandera del modo de entrenamiento
+  registroActualEntrenamiento = 0;        ///< Reiniciamos el entrenamiento desde el registro 0
+  confirmacionVisual = true;              ///< Activamos la bandera del parpadeo de confirmación
+  parpadeando = false;                    ///< Nos aseguramos de que no haya otro parpadeo activo
+  ultimoParpadeoMillis = millis();        ///< Guardamos el tiempo actual para el parpadeo
+  intervaloParpadeo = INTERVALO_PARPADEO_RAPIDO; ///< Ajustamos el intervalo para que sea rápido
+  Serial.println("Preparando para el entrenamiento..."); ///< Mensaje informativo
+  Serial.println("Por favor, espere el parpadeo rapido del LED interno..."); ///< Mensaje informativo
+}
 
-  // Apagar todas las salidas primero
-  digitalWrite(SALIDA_0, LOW);
-  digitalWrite(SALIDA_1, LOW);
-  digitalWrite(SALIDA_2, LOW);
-
-  // Activar la salida correspondiente
-  switch (registro) {
-    case 0:
-      digitalWrite(SALIDA_0, HIGH); ///< Activa la salida para "Jarvis"
-      break;
-    case 1:
-      digitalWrite(SALIDA_1, HIGH); ///< Activa la salida para "Abrir"
-      break;
-    case 2:
-      digitalWrite(SALIDA_2, HIGH); ///< Activa la salida para "Cerrar"
-      break;
+/**
+ * @brief Maneja la lógica del modo de entrenamiento.
+ *
+ * Esta función es la "máquina de estados" del entrenamiento.
+ * Gestiona el parpadeo de confirmación, espera la entrada de voz,
+ * y llama a la función de entrenamiento del módulo VR con las signaturas correctas.
+ */
+void manejarModoEntrenamiento() {
+  if (confirmacionVisual) {               ///< Si estamos en la etapa de confirmación visual...
+    if (millis() - ultimoParpadeoMillis >= TIEMPO_CONFIRMACION) { ///< ...esperamos 5 segundos
+      confirmacionVisual = false;         ///< Desactivamos la confirmación
+      Serial.println("Entrenamiento comenzando en 3 segundos..."); ///< Mensaje informativo
+      mostrarInstruccionEntrenamiento();  ///< Mostramos la instrucción específica para el registro actual
+      inicioEsperaEntrenamiento = millis(); ///< Guardamos el tiempo de inicio de espera
+      iniciarParpadeoEntrenamiento(registroActualEntrenamiento); ///< Iniciamos el parpadeo del primer registro
+    }
+    return;                               ///< Salimos para esperar a que pase el tiempo
+  }
+  
+  if (millis() - inicioEsperaEntrenamiento >= TIEMPO_ESPERA_ENTRENAMIENTO) { ///< Si ha pasado el tiempo de espera...
+    Serial.println("Tiempo de espera agotado. Intentelo de nuevo."); ///< Avisamos al usuario
+    entrenarSiguienteRegistro(false);     ///< Y volvemos a intentar el mismo registro
+    return;                               ///< Salimos para esperar de nuevo
   }
 
-  delay(500); ///< Mantiene la salida activa durante medio segundo
+  // Obtener la signatura correspondiente al registro actual
+  String signaturaActual = obtenerSignaturaRegistro(registroActualEntrenamiento);
+  
+  // Intenta entrenar con el registro actual y su signatura correspondiente
+  // La función trainWithSignature necesita la signatura como array de bytes
+  int ret = myVR.trainWithSignature(registroActualEntrenamiento, 
+                                   (uint8_t*)signaturaActual.c_str(), 
+                                   signaturaActual.length(), 
+                                   buf);
+  
+  if (ret >= 0) {                         ///< Si el resultado es exitoso (retorno >= 0)...
+    // Éxito en el entrenamiento del registro actual
+    Serial.print("Entrenamiento del registro "); ///< Mensaje de éxito
+    Serial.print(registroActualEntrenamiento);
+    Serial.print(" con signatura '");
+    Serial.print(signaturaActual);
+    Serial.println("' exitoso!");
+    entrenarSiguienteRegistro(true);      ///< Pasamos al siguiente registro
+  } else if (ret == -1) {                 ///< Si hubo un fallo (retorno == -1)...
+    // Fallo en el entrenamiento
+    Serial.print("Fallo en el entrenamiento del registro "); 
+    Serial.print(registroActualEntrenamiento);
+    Serial.print(" con signatura '");
+    Serial.print(signaturaActual);
+    Serial.println("'. Intentelo de nuevo.");
+    entrenarSiguienteRegistro(false);     ///< Volvemos a intentar el mismo registro
+  }
+}
 
-  // Apagar nuevamente todas las salidas
-  digitalWrite(SALIDA_0, LOW);
-  digitalWrite(SALIDA_1, LOW);
-  digitalWrite(SALIDA_2, LOW);
+/**
+ * @brief Avanza al siguiente registro de entrenamiento o finaliza el modo.
+ *
+ * @param exito Un valor booleano que indica si el entrenamiento del registro actual fue exitoso.
+ * Es crucial para decidir si se avanza o se repite el entrenamiento.
+ */
+void entrenarSiguienteRegistro(bool exito) {
+  if (exito) {                            ///< Si el entrenamiento fue exitoso...
+      if (registroActualEntrenamiento < 2) { ///< ...y todavía hay registros por entrenar...
+          registroActualEntrenamiento++;  ///< ...avanzamos al siguiente
+          Serial.print("Preparando para entrenar el registro "); ///< Mensaje informativo
+          Serial.print(registroActualEntrenamiento);
+          String siguienteSignatura = obtenerSignaturaRegistro(registroActualEntrenamiento);
+          Serial.print(" con signatura '");
+          Serial.print(siguienteSignatura);
+          Serial.println("'...");
+          
+          // Pequeña pausa antes del siguiente entrenamiento
+          delay(2000);                    ///< Pausa de 2 segundos entre registros
+          
+          iniciarParpadeoEntrenamiento(registroActualEntrenamiento); ///< Iniciamos el parpadeo del nuevo registro
+          mostrarInstruccionEntrenamiento(); ///< Mostramos la nueva instrucción
+      } else {                            ///< ...si ya entrenamos todos los registros...
+          Serial.println("Entrenamiento de todos los registros finalizado con exito."); ///< Mensaje de finalización
+          Serial.println("Todas las signaturas han sido configuradas:"); 
+          Serial.println("- Registro 0: 'jarvis'");
+          Serial.println("- Registro 1: 'Abrir'");
+          Serial.println("- Registro 2: 'Cerrar'");
+          finalizarModoEntrenamiento();   ///< Finalizamos el modo de entrenamiento
+          return;                         ///< Salimos sin reiniciar el tiempo
+      }
+  } else {                                ///< Si el entrenamiento falló...
+      String signaturaActual = obtenerSignaturaRegistro(registroActualEntrenamiento);
+      Serial.print("Reiniciando entrenamiento del registro ");
+      Serial.print(registroActualEntrenamiento);
+      Serial.print(" con signatura '");
+      Serial.print(signaturaActual);
+      Serial.println("'.");
+      
+      // Pequeña pausa antes de reintentar
+      delay(1000);                        ///< Pausa de 1 segundo antes de reintentar
+      
+      iniciarParpadeoEntrenamiento(registroActualEntrenamiento); ///< Reiniciamos el parpadeo para el mismo registro
+      mostrarInstruccionEntrenamiento();  ///< Mostramos la instrucción nuevamente
+  }
+  
+  inicioEsperaEntrenamiento = millis();   ///< Reiniciamos el contador de tiempo de espera
+}
+
+/**
+ * @brief Finaliza el modo de entrenamiento y vuelve al modo normal.
+ *
+ * Desactiva la bandera `modoEntrenamiento` y asegura que el LED se apague.
+ * Vuelve a cargar los registros usando la función corregida cargarRegistros().
+ */
+void finalizarModoEntrenamiento() {
+  modoEntrenamiento = false;              ///< Desactivamos el modo de entrenamiento
+  parpadeando = false;                    ///< Detenemos el parpadeo
+  digitalWrite(LED_INTERNO, LOW);         ///< Apagamos el LED interno por seguridad
+  Serial.println("Saliendo del modo de entrenamiento. Volviendo al modo de reconocimiento normal."); ///< Mensaje informativo
+
+  // Pequeña pausa antes de cargar los registros
+  delay(1000);                            ///< Pausa de 1 segundo
+  
+  // Volver a cargar los registros para que estén activos usando la función corregida
+  Serial.println("Cargando registros entrenados para reconocimiento...");
+  if (cargarRegistros()) {                ///< Usamos nuestra función cargarRegistros() corregida
+    Serial.println("Registros cargados exitosamente. El sistema esta listo para reconocer comandos.");
+  } else {
+    Serial.println("Error al cargar registros. Puede que el reconocimiento no funcione correctamente.");
+  }
+}
+
+/**
+ * @brief Inicia el parpadeo no bloqueante del LED interno para el entrenamiento.
+ *
+ * Configura el número de parpadeos y el intervalo según el registro que se está entrenando.
+ *
+ * @param registro Número de registro. 0 para 1 parpadeo, 1 para 2 parpadeos, 2 para 3 parpadeos.
+ */
+void iniciarParpadeoEntrenamiento(int registro) {
+  parpadeosObjetivo = (registro + 1) * 2; ///< El número de parpadeos es (registro + 1)
+  parpadeosRealizados = 0;                ///< Reiniciamos el contador de parpadeos
+  estadoLed = false;                      ///< Empezamos con el LED apagado
+  digitalWrite(LED_INTERNO, LOW);         ///< Nos aseguramos de que el LED esté apagado
+  parpadeando = true;                     ///< Activamos la bandera de parpadeo
+  ultimoParpadeoMillis = millis();        ///< Guardamos el tiempo actual
+  intervaloParpadeo = 1000;               ///< Ajustamos el intervalo a 1 segundo
+}
+
+/**
+ * @brief Inicia el parpadeo no bloqueante del LED interno.
+ *
+ * Esta función inicia un parpadeo del LED interno por un tiempo y cantidad determinados.
+ * Se usa para dar una respuesta visual al reconocer un comando de voz.
+ *
+ * @param registro Número de registro, que determina la cantidad de parpadeos.
+ */
+void iniciarParpadeo(int registro) {
+  parpadeosObjetivo = (registro + 1) * 2; ///< La cantidad de parpadeos es 1, 2 o 3, dependiendo del registro
+  parpadeosRealizados = 0;                ///< El contador de parpadeos realizados se reinicia
+  estadoLed = true;                       ///< El LED comienza encendido
+  digitalWrite(LED_INTERNO, HIGH);        ///< Lo encendemos inmediatamente
+  parpadeando = true;                     ///< Activamos la bandera de parpadeo
+  ultimoParpadeoMillis = millis();        ///< Guardamos el momento actual
+  intervaloParpadeo = 200;                ///< Definimos un intervalo de 200ms
+}
+
+/**
+ * @brief Actualiza el parpadeo del LED de forma no bloqueante.
+ *
+ * Esta función se ejecuta en el bucle principal. Verifica si ha pasado el tiempo del intervalo
+ * y cambia el estado del LED, incrementando el contador de parpadeos.
+ */
+void actualizarParpadeo() {
+  if (!parpadeando) return;               ///< Si no se está parpadeando, no hacemos nada
+
+  unsigned long ahora = millis();         ///< Guardamos el tiempo actual
+  if (ahora - ultimoParpadeoMillis >= intervaloParpadeo) { ///< Si ha pasado el tiempo del intervalo...
+    ultimoParpadeoMillis = ahora;         ///< ...actualizamos el tiempo
+    estadoLed = !estadoLed;               ///< ...cambiamos el estado del LED (de encendido a apagado o viceversa)
+    digitalWrite(LED_INTERNO, estadoLed ? HIGH : LOW); ///< Escribimos el nuevo estado al pin
+
+    parpadeosRealizados++;                ///< Incrementamos el contador de parpadeos
+    if (parpadeosRealizados >= parpadeosObjetivo) { ///< Si ya se ha cumplido el objetivo de parpadeos...
+        parpadeando = false;              ///< ...desactivamos la bandera
+        digitalWrite(LED_INTERNO, LOW);   ///< ...y nos aseguramos de que el LED se apague
+    }
+  }
+}
+
+/**
+ * @brief Activa una salida durante 500 ms de forma no bloqueante.
+ *
+ * @param registro El índice del registro, que corresponde a la salida a activar.
+ */
+void ejecutarSalidaPulsada(int registro) {
+  unsigned long ahora = millis();         ///< Guardamos el tiempo actual
+  unsigned long tiempoApagado = ahora + 500; ///< Calculamos el momento en que se debe apagar la salida
+
+  switch (registro) {                     ///< Usamos el índice para seleccionar la salida
+    case 0:
+      digitalWrite(SALIDA_0, HIGH);       ///< Activamos la salida 0
+      salidaOffMillis[0] = tiempoApagado; ///< Guardamos el tiempo de apagado
+      break;
+    case 1:
+      digitalWrite(SALIDA_1, HIGH);
+      salidaOffMillis[1] = tiempoApagado;
+      break;
+    case 2:
+      digitalWrite(SALIDA_2, HIGH);
+      salidaOffMillis[2] = tiempoApagado;
+      break;
+    default:
+      break;
+  }
+}
+
+/**
+ * @brief Actualiza el estado de las salidas pulsadas.
+ *
+ * En el bucle principal, esta función verifica si ha llegado el momento de apagar alguna salida
+ * que se haya activado previamente.
+ */
+void actualizarSalidas() {
+  unsigned long ahora = millis();         ///< Guardamos el tiempo actual
+
+  if (salidaOffMillis[0] && ahora >= salidaOffMillis[0]) { ///< Si hay un tiempo de apagado guardado y ya llegó...
+    digitalWrite(SALIDA_0, LOW);          ///< ...apagamos la salida 0
+    salidaOffMillis[0] = 0;               ///< ...y reiniciamos la variable
+  }
+  if (salidaOffMillis[1] && ahora >= salidaOffMillis[1]) {
+    digitalWrite(SALIDA_1, LOW);
+    salidaOffMillis[1] = 0;
+  }
+  if (salidaOffMillis[2] && ahora >= salidaOffMillis[2]) {
+    digitalWrite(SALIDA_2, LOW);
+    salidaOffMillis[2] = 0;
+  }
+}
+
+/**
+ * @brief Prepara el movimiento del servo para "abrir".
+ *
+ * Establece el ángulo objetivo del servo para que se mueva a la posición de apertura
+ * de manera gradual y no bloqueante.
+ */
+void iniciarMovimientoServoAbrir() {
+  servoAnguloObjetivo = constrain(SERVO_NEUTRAL + 60, 0, 180); ///< Definimos el ángulo objetivo, asegurándonos de que esté en un rango válido
+  servoMoviendose = true;                 ///< Activamos la bandera de movimiento
+  ultimoMovimientoServoMillis = millis(); ///< Reiniciamos el contador de tiempo
+}
+
+/**
+ * @brief Prepara el movimiento del servo para "cerrar".
+ *
+ * Establece el ángulo objetivo del servo para que se mueva a la posición de cierre
+ * de manera gradual y no bloqueante.
+ */
+void iniciarMovimientoServoCerrar() {
+  servoAnguloObjetivo = constrain(SERVO_NEUTRAL - 60, 0, 180); ///< Definimos el ángulo objetivo para el cierre
+  servoMoviendose = true;
+  ultimoMovimientoServoMillis = millis();
+}
+
+/**
+ * @brief Actualiza el movimiento del servo de forma gradual y no bloqueante.
+ *
+ * En el bucle principal, esta función mueve el servo un pequeño paso a la vez
+ * para que el movimiento sea suave y no bloquee el resto del programa.
+ */
+void actualizarServo() {
+  if (!servoMoviendose) return;           ///< Si el servo no debe moverse, no hacemos nada
+
+  unsigned long ahora = millis();         ///< Guardamos el tiempo actual
+  if (ahora - ultimoMovimientoServoMillis < SERVO_STEP_MS) return; ///< Si no ha pasado el tiempo del paso, salimos
+
+  ultimoMovimientoServoMillis = ahora;    ///< Reiniciamos el contador de tiempo
+
+  if (servoAnguloActual < servoAnguloObjetivo) { ///< Si el ángulo actual es menor al objetivo...
+    servoAnguloActual = min(servoAnguloObjetivo, servoAnguloActual + SERVO_STEP_DEG); ///< ...lo incrementamos un paso
+    servo.write(servoAnguloActual);       ///< Y movemos el servo a ese nuevo ángulo
+  } else if (servoAnguloActual > servoAnguloObjetivo) { ///< Si es mayor al objetivo...
+    servoAnguloActual = max(servoAnguloObjetivo, servoAnguloActual - SERVO_STEP_DEG); ///< ...lo decrementamos
+    servo.write(servoAnguloActual);
+  }
+
+  if (servoAnguloActual == servoAnguloObjetivo) { ///< Si el servo ya llegó a su destino...
+    servoMoviendose = false;              ///< ...desactivamos la bandera de movimiento
+  }
+}
+
+/**
+ * @brief Maneja el ciclo de reproducción de audio.
+ *
+ * Esta función es fundamental para la reproducción de audio no bloqueante.
+ * Usa `mp3.loop()` para procesar la reproducción del archivo de audio en segundo plano.
+ * Cuando el audio termina, detiene la reproducción y cierra el archivo, y además
+ * activa el movimiento del servo para que vuelva a su posición neutra.
+ */
+void manejarReproduccionAudio() {
+  if (mp3.isRunning()) {                  ///< Si hay un audio sonando...
+    if (!mp3.loop()) {                    ///< ...y la función `loop()` retorna falso (lo que indica que terminó)...
+      yield();                            ///< ...cedemos el control para otras tareas
+      mp3.stop();                         ///< ...detenemos la reproducción
+      fuente.close();                     ///< ...cerramos el archivo de la SD
+      reproduccionEnCurso = false;        ///< ...desactivamos la bandera
+      Serial.println("Audio detenido y archivo cerrado"); ///< Mensaje informativo
+      
+      // Devolver servo a neutro de forma suave
+      servoAnguloObjetivo = SERVO_NEUTRAL; ///< El servo debe volver a la posición neutra
+      servoMoviendose = true;             ///< Activamos el movimiento para que regrese
+    }
+  } else {                                ///< Si no hay un audio sonando...
+    if (!reproduccionEnCurso && archivoAudioActual.length() > 0) { ///< ...y tenemos un archivo para reproducir...
+      reproducirAudio(archivoAudioActual.c_str()); ///< ...iniciamos la reproducción
+      reproduccionEnCurso = true;         ///< Activamos la bandera
+      archivoAudioActual = "";            ///< Borramos la ruta del archivo para no reproducirlo de nuevo
+    }
+  }
+}
+
+/**
+ * @brief Inicia la reproducción de un archivo MP3 desde la tarjeta SD.
+ *
+ * @param ruta Una cadena de texto con la ruta completa del archivo en la SD.
+ */
+void reproducirAudio(const char *ruta) {
+  if (!SD.exists(ruta)) {                 ///< Verificamos si el archivo existe en la SD
+    Serial.print("Archivo no encontrado: ");
+    Serial.println(ruta);
+    return;                               ///< Si no existe, salimos de la función
+  }
+
+  if (!fuente.open(ruta)) {               ///< Intentamos abrir el archivo
+    Serial.print("Error al abrir el archivo: ");
+    Serial.println(ruta);
+    return;                               ///< Si falla la apertura, salimos
+  }
+
+  Serial.print("Iniciando reproduccion de: "); ///< Mensaje informativo
+  Serial.println(ruta);
+  yield();                                ///< Ceder tiempo a otras tareas
+
+  mp3.begin(&fuente, &salidaAudio);       ///< Iniciamos la reproducción
+}
+
+/**
+ * @brief Verifica si el dispositivo tiene registros entrenados.
+ *
+ * Es una función auxiliar que comprueba el estado del reconocedor de voz.
+ *
+ * @return `true` si hay registros entrenados, `false` si no hay ninguno.
+ */
+bool entrenarConFirmaCargado() {
+    uint8_t buf[255];                     ///< Creamos un buffer para la respuesta
+    int ret = myVR.checkRecognizer(buf);  ///< Enviamos un comando para verificar el estado
+    if (ret > 0) {                        ///< Si la respuesta es válida...
+        return buf[0] > 0;                ///< ...retornamos si el buffer indica que hay registros
+    }
+    return false;                         ///< Si no hay una respuesta válida, asumimos que no hay registros
 }
