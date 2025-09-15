@@ -1,0 +1,566 @@
+// --- LIBRERÍAS: LAS CAJAS DE HERRAMIENTAS ---
+#include "VoiceRecognitionV3.h"
+#include "AudioFileSourceSD.h"
+#include "AudioGeneratorMP3.h"
+#include "AudioOutputI2SNoDAC.h"
+#include "FS.h"
+#include "SD.h"
+#include "SPI.h"
+#include <ESP32Servo.h>
+
+// --- CONFIGURACIÓN GENERAL ---
+#define Version "1.2-Fixed"
+
+// --- CONFIGURACIÓN DE PINES ---
+#define PIN_TX 17
+#define PIN_RX 16
+#define LED_INTERNO 2
+#define NUM_REGISTROS 11
+#define SALIDA_0 25
+#define SALIDA_1 26
+#define SALIDA_2 27
+#define SALIDA_REACTOR_ON 33
+#define CS 5
+#define SERVO_PIN 32
+#define SERVO_NEUTRAL 90
+#define SERVO_STEP_DEG 1
+#define SERVO_STEP_MS 15
+
+// --- VARIABLES GLOBALES Y OBJETOS ---
+VR miReconocedor(PIN_RX, PIN_TX);
+uint8_t registros[NUM_REGISTROS] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+uint8_t buf[65];
+
+AudioGeneratorMP3 decodificadorMp3;
+AudioFileSourceSD fuenteAudio;
+AudioOutputI2SNoDAC salidaI2S;
+bool reproduccionEnCurso = false;
+String archivoAudioActual = "";
+String archivoSiguiente = "";
+
+bool parpadeando = false;
+int parpadeosObjetivo = 0;
+int parpadeosRealizados = 0;
+bool estadoLed = false;
+unsigned long ultimoParpadeoMillis = 0;
+unsigned long intervaloParpadeo = 200;
+
+unsigned long salidaOffMillis[NUM_REGISTROS] = {0};
+
+Servo servo;
+int servoAnguloActual = SERVO_NEUTRAL;
+int servoAnguloObjetivo = SERVO_NEUTRAL;
+unsigned long ultimoMovimientoServoMillis = 0;
+bool servoMoviendose = false;
+
+#define TIEMPO_ESPERA_ENTRENAMIENTO 8000
+#define TIEMPO_CONFIRMACION 5000
+#define INTERVALO_PARPADEO_RAPIDO 100
+
+bool modoEntrenamiento = false;
+int registroActualEntrenamiento = 0;
+unsigned long inicioEsperaEntrenamiento = 0;
+bool confirmacionVisual = false;
+String comandoSerial = "";
+
+// --- DECLARACIÓN DE FUNCIONES ---
+bool cargarRegistros();
+void leerRespuestaModulo();
+String obtenerSignaturaRegistro(int registro);
+void manejarModoOperacionNormal();
+void reproducirAudio(const char *ruta);
+void manejarReproduccionAudio();
+void iniciarModoEntrenamiento();
+void manejarModoEntrenamiento();
+void entrenarSiguienteRegistro(bool exito);
+void finalizarModoEntrenamiento();
+void actualizarParpadeo();
+void ejecutarSalidaPulsada(int registro);
+void actualizarSalidas();
+void actualizarServo();
+void mostrarInstruccionEntrenamiento();
+void iniciarParpadeoEntrenamiento(int registro);
+void iniciarParpadeo(int registro);
+void iniciarMovimientoServoAbrir();
+void iniciarMovimientoServoCerrar();
+
+String obtenerSignaturaRegistro(int registro) {
+  switch(registro) {
+    case 0: return "Jarvis";
+    case 1: return "Abrir";
+    case 2: return "Cerrar";
+    case 3: return "Diagnostico";
+    case 4: return "Me Amas";
+    case 5: return "Modo Ataque";
+    case 6: return "Musica";
+    case 7: return "Musica2";
+    case 8: return "Reactor On";
+    case 9: return "Comando Extra 1";
+    case 10: return "Comando Extra 2";
+    default: return "";
+  }
+}
+
+bool cargarRegistros() {
+    uint8_t bufferComando1[8] = {0x30, 0, 1, 2, 3, 4, 5, 6};
+    Serial.println("Enviando paquete 1 para cargar registros 0-6...");
+    miReconocedor.send_pkt(bufferComando1, 8);
+    delay(100);
+    leerRespuestaModulo();
+
+    uint8_t bufferComando2[5] = {0x30, 7, 8, 9, 10};
+    Serial.println("Enviando paquete 2 para cargar registros 7-10...");
+    miReconocedor.send_pkt(bufferComando2, 5);
+    delay(100);
+    leerRespuestaModulo();
+
+    Serial.println("Carga de todos los registros enviada.");
+    return true;
+}
+
+void leerRespuestaModulo() {
+  uint8_t bufferRespuesta[400];
+  uint8_t longitudesPaquetes[32];
+  int longitudTotal = 0;
+  int indicePaquete = 0;
+  int resultadoRecepcion;
+  
+  while(true) {
+    resultadoRecepcion = miReconocedor.receive_pkt(bufferRespuesta + longitudTotal, 50);
+    if(resultadoRecepcion > 0) {
+      longitudTotal += resultadoRecepcion;
+      longitudesPaquetes[indicePaquete] = resultadoRecepcion;
+      indicePaquete++;
+    } else {
+      break;
+    }
+  }
+  
+  if(indicePaquete > 0) {
+    longitudTotal = 0;
+    for(int i = 0; i < indicePaquete; i++) {
+      Serial.print("< ");
+      miReconocedor.writehex(bufferRespuesta + longitudTotal, longitudesPaquetes[i]);
+      longitudTotal += longitudesPaquetes[i];
+      Serial.println();
+    }
+  } else {
+    Serial.println("No se recibio respuesta del modulo.");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(LED_INTERNO, OUTPUT);
+  pinMode(SALIDA_0, OUTPUT);
+  pinMode(SALIDA_1, OUTPUT);
+  pinMode(SALIDA_2, OUTPUT);
+  pinMode(SALIDA_REACTOR_ON, OUTPUT);
+
+  digitalWrite(LED_INTERNO, LOW);
+  digitalWrite(SALIDA_0, LOW);
+  digitalWrite(SALIDA_1, LOW);
+  digitalWrite(SALIDA_2, LOW);
+  digitalWrite(SALIDA_REACTOR_ON, LOW);
+
+  Serial.println("Inicializando modulo de reconocimiento de voz...");
+  miReconocedor.begin(9600);
+  Serial.println("Modulo de voz inicializado.");
+  
+  Serial.println("Inicializando tarjeta SD...");
+  if (!SD.begin(CS)) {
+    Serial.println("Error: Tarjeta SD no encontrada o inicializacion fallida");
+  } else {
+    Serial.println("Tarjeta SD inicializada correctamente.");
+  }
+  salidaI2S.SetOutputModeMono(true);
+  servo.attach(SERVO_PIN);
+  servo.write(servoAnguloActual);
+  ultimoMovimientoServoMillis = millis();
+
+  Serial.println("Cargando todos los registros de voz...");
+  if (cargarRegistros()) {
+     Serial.println("Comandos de carga de registros enviados.");
+  } else {
+     Serial.println("Error al enviar comandos de carga.");
+  }
+
+  Serial.print("Version del firmware: "); Serial.println(Version);
+  Serial.println("Dispositivo listo. Esperando comandos...");
+}
+
+void loop() {
+  // Tarea de alta prioridad: Mantener el flujo de audio.
+  // Si un MP3 se está reproduciendo, esta es la única tarea que debe correr
+  // para asegurar que el búfer I2S no se vacíe.
+  if (reproduccionEnCurso) {
+    manejarReproduccionAudio();
+    // No se ejecuta nada más para darle al procesador el máximo tiempo
+    // para decodificar el audio. `yield()` cede tiempo a otras tareas del sistema.
+    yield(); 
+    return;
+  }
+
+  // --- LÓGICA NORMAL (SOLO SI NO HAY AUDIO REPRODUCIÉNDOSE) ---
+
+  if (Serial.available()) {
+      char c = Serial.read();
+      if (c == '\n') {
+          String comando = comandoSerial;
+          comandoSerial = "";
+          comando.trim();
+          if (comando.equalsIgnoreCase("entrenar")) {
+              iniciarModoEntrenamiento();
+          }
+      } else {
+          comandoSerial += c;
+      }
+  }
+
+  if (modoEntrenamiento) {
+    manejarModoEntrenamiento();
+  } else {
+    manejarModoOperacionNormal();
+  }
+
+  // Estas tareas se ejecutan solo cuando el sistema está "inactivo" (sin audio).
+  actualizarParpadeo();
+  actualizarSalidas();
+  actualizarServo();
+  
+  // Se llama de nuevo para poder iniciar una nueva pista de audio
+  manejarReproduccionAudio();
+}
+
+void manejarModoOperacionNormal() {
+  int ret = miReconocedor.recognize(buf, 50);
+  if (ret > 0) {
+    int registro = buf[1];
+    iniciarParpadeo(registro);
+    
+    switch (registro) {
+      case 0:
+        Serial.println("Comando reconocido: Jarvis");
+        ejecutarSalidaPulsada(registro);
+        archivoAudioActual = "/jarvis.mp3";
+        break;
+      case 1:
+        Serial.println("Comando reconocido: Abrir mascara");
+        ejecutarSalidaPulsada(registro);
+        archivoAudioActual = "/abrir.mp3";
+        iniciarMovimientoServoAbrir();
+        break;
+      case 2:
+        Serial.println("Comando reconocido: Cerrar mascara");
+        ejecutarSalidaPulsada(registro);
+        archivoAudioActual = "/cerrar.mp3";
+        iniciarMovimientoServoCerrar();
+        break;
+      case 3:
+        Serial.println("Comando reconocido: Diagnostico");
+        archivoAudioActual = "/audio_diagnostico.mp3";
+        break;
+      case 4:
+        Serial.println("Comando reconocido: Me Amas");
+        archivoAudioActual = "/audio_me_amas.mp3";
+        break;
+      case 5:
+        Serial.println("Comando reconocido: Modo Ataque");
+        archivoAudioActual = "/audio_modo_ataque.mp3";
+        break;
+      case 6:
+        Serial.println("Comando reconocido: Musica");
+        archivoAudioActual = "/audio_pre_musica.mp3";
+        archivoSiguiente = "/musica_1.mp3";
+        break;
+      case 7:
+        Serial.println("Comando reconocido: Musica2");
+        archivoAudioActual = "/audio_pre_musica.mp3";
+        archivoSiguiente = "/musica_2.mp3";
+        break;
+      case 8:
+        Serial.println("Comando reconocido: Reactor On");
+        ejecutarSalidaPulsada(registro);
+        archivoAudioActual = "/audio_reactor_on.mp3";
+        break;
+      case 9:
+        Serial.println("Comando reconocido: Comando Extra 1");
+        break;
+      case 10:
+        Serial.println("Comando reconocido: Comando Extra 2");
+        break;
+      default:
+        Serial.println("Registro de comando no reconocido");
+    }
+  }
+}
+
+void iniciarModoEntrenamiento() {
+  Serial.println(">>> Modo de entrenamiento activado <<<");
+  modoEntrenamiento = true;
+  registroActualEntrenamiento = 0;
+  confirmacionVisual = true;
+  parpadeando = false;
+  ultimoParpadeoMillis = millis();
+  intervaloParpadeo = INTERVALO_PARPADEO_RAPIDO;
+  Serial.println("Preparando para el entrenamiento...");
+  Serial.println("Por favor, espere el parpadeo rapido del LED interno...");
+}
+
+void manejarModoEntrenamiento() {
+  if (confirmacionVisual) {
+    if (millis() - ultimoParpadeoMillis >= TIEMPO_CONFIRMACION) {
+      confirmacionVisual = false;
+      Serial.println("Entrenamiento comenzando...");
+      mostrarInstruccionEntrenamiento();
+      inicioEsperaEntrenamiento = millis();
+      iniciarParpadeoEntrenamiento(registroActualEntrenamiento);
+    }
+    return;
+  }
+  
+  if (millis() - inicioEsperaEntrenamiento >= TIEMPO_ESPERA_ENTRENAMIENTO) {
+    Serial.println("Tiempo de espera agotado. Intentelo de nuevo.");
+    entrenarSiguienteRegistro(false);
+    return;
+  }
+
+  String signaturaActual = obtenerSignaturaRegistro(registroActualEntrenamiento);
+  int ret = miReconocedor.trainWithSignature(registroActualEntrenamiento, 
+                                   (uint8_t*)signaturaActual.c_str(), 
+                                   signaturaActual.length(), 
+                                   buf);
+  
+  if (ret >= 0) {
+    Serial.print("Entrenamiento del registro ");
+    Serial.print(registroActualEntrenamiento);
+    Serial.print(" ('");
+    Serial.print(signaturaActual);
+    Serial.println("') exitoso!");
+    entrenarSiguienteRegistro(true);
+  } else if (ret == -1) {
+    Serial.print("Fallo en el entrenamiento del registro "); 
+    Serial.print(registroActualEntrenamiento);
+    Serial.print(" ('");
+    Serial.print(signaturaActual);
+    Serial.println("'). Intentelo de nuevo.");
+    entrenarSiguienteRegistro(false);
+  }
+}
+
+void mostrarInstruccionEntrenamiento() {
+  String signatura = obtenerSignaturaRegistro(registroActualEntrenamiento);
+  Serial.print("Registro ");
+  Serial.print(registroActualEntrenamiento);
+  Serial.print(": Diga la palabra '");
+  Serial.print(signatura);
+  Serial.println("' cuando el LED se encienda.");
+}
+
+void entrenarSiguienteRegistro(bool exito) {
+  if (exito) {
+      if (registroActualEntrenamiento < (NUM_REGISTROS - 1)) {
+          registroActualEntrenamiento++;
+          Serial.print("Preparando para entrenar el siguiente registro: ");
+          Serial.println(registroActualEntrenamiento);
+          delay(2000);
+          iniciarParpadeoEntrenamiento(registroActualEntrenamiento);
+          mostrarInstruccionEntrenamiento();
+      } else {
+          Serial.println("--- Entrenamiento de todos los registros finalizado con exito. ---");
+          for(int i=0; i<NUM_REGISTROS; i++){
+            Serial.print("- Registro "); Serial.print(i); Serial.print(": '");
+            Serial.print(obtenerSignaturaRegistro(i)); Serial.println("'");
+          }
+          finalizarModoEntrenamiento();
+          return;
+      }
+  } else {
+      Serial.print("Reiniciando entrenamiento del registro ");
+      Serial.println(registroActualEntrenamiento);
+      delay(1000);
+      iniciarParpadeoEntrenamiento(registroActualEntrenamiento);
+      mostrarInstruccionEntrenamiento();
+  }
+  
+  inicioEsperaEntrenamiento = millis();
+}
+
+void finalizarModoEntrenamiento() {
+  modoEntrenamiento = false;
+  parpadeando = false;
+  digitalWrite(LED_INTERNO, LOW);
+  Serial.println("Saliendo del modo de entrenamiento. Volviendo al modo de reconocimiento.");
+  delay(1000);
+  
+  Serial.println("Cargando registros entrenados para reconocimiento...");
+  if (cargarRegistros()) {
+    Serial.println("Registros cargados. El sistema esta listo.");
+  } else {
+    Serial.println("Error al cargar registros.");
+  }
+}
+
+void iniciarParpadeoEntrenamiento(int registro) {
+  parpadeosObjetivo = (registro + 1) * 2;
+  parpadeosRealizados = 0;
+  estadoLed = false;
+  digitalWrite(LED_INTERNO, LOW);
+  parpadeando = true;
+  ultimoParpadeoMillis = millis();
+  intervaloParpadeo = 1000;
+}
+
+void iniciarParpadeo(int registro) {
+  parpadeosObjetivo = (registro + 1) * 2;
+  parpadeosRealizados = 0;
+  estadoLed = true;
+  digitalWrite(LED_INTERNO, HIGH);
+  parpadeando = true;
+  ultimoParpadeoMillis = millis();
+  intervaloParpadeo = 200;
+}
+
+void actualizarParpadeo() {
+  if (!parpadeando) return;
+
+  unsigned long ahora = millis();
+  if (ahora - ultimoParpadeoMillis >= intervaloParpadeo) {
+    ultimoParpadeoMillis = ahora;
+    estadoLed = !estadoLed;
+    digitalWrite(LED_INTERNO, estadoLed ? HIGH : LOW);
+    parpadeosRealizados++;
+    if (parpadeosRealizados >= parpadeosObjetivo) {
+        parpadeando = false;
+        digitalWrite(LED_INTERNO, LOW);
+    }
+  }
+}
+
+void ejecutarSalidaPulsada(int registro) {
+  unsigned long ahora = millis();
+  unsigned long tiempoApagado = ahora + 500;
+
+  switch (registro) {
+    case 0:
+      digitalWrite(SALIDA_0, HIGH);
+      salidaOffMillis[0] = tiempoApagado;
+      break;
+    case 1:
+      digitalWrite(SALIDA_1, HIGH);
+      salidaOffMillis[1] = tiempoApagado;
+      break;
+    case 2:
+      digitalWrite(SALIDA_2, HIGH);
+      salidaOffMillis[2] = tiempoApagado;
+      break;
+    case 8:
+      digitalWrite(SALIDA_REACTOR_ON, HIGH);
+      salidaOffMillis[8] = tiempoApagado;
+      break;
+  }
+}
+
+void actualizarSalidas() {
+  unsigned long ahora = millis();
+  for(int i=0; i < NUM_REGISTROS; i++){
+    if (salidaOffMillis[i] && ahora >= salidaOffMillis[i]) {
+      switch(i){
+        case 0: digitalWrite(SALIDA_0, LOW); break;
+        case 1: digitalWrite(SALIDA_1, LOW); break;
+        case 2: digitalWrite(SALIDA_2, LOW); break;
+        case 8: digitalWrite(SALIDA_REACTOR_ON, LOW); break;
+      }
+      salidaOffMillis[i] = 0;
+    }
+  }
+}
+
+void iniciarMovimientoServoAbrir() {
+  servoAnguloObjetivo = constrain(SERVO_NEUTRAL + 60, 0, 180);
+  servoMoviendose = true;
+  ultimoMovimientoServoMillis = millis();
+}
+
+void iniciarMovimientoServoCerrar() {
+  servoAnguloObjetivo = constrain(SERVO_NEUTRAL - 60, 0, 180);
+  servoMoviendose = true;
+  ultimoMovimientoServoMillis = millis();
+}
+
+void actualizarServo() {
+  if (!servoMoviendose) return;
+
+  unsigned long ahora = millis();
+  if (ahora - ultimoMovimientoServoMillis < SERVO_STEP_MS) return;
+
+  ultimoMovimientoServoMillis = ahora;
+  if (servoAnguloActual < servoAnguloObjetivo) {
+    servoAnguloActual = min(servoAnguloObjetivo, servoAnguloActual + SERVO_STEP_DEG);
+    servo.write(servoAnguloActual);
+  } else if (servoAnguloActual > servoAnguloObjetivo) {
+    servoAnguloActual = max(servoAnguloObjetivo, servoAnguloActual - SERVO_STEP_DEG);
+    servo.write(servoAnguloActual);
+  }
+
+  if (servoAnguloActual == servoAnguloObjetivo) {
+    servoMoviendose = false;
+  }
+}
+
+/**
+ * @brief Gestiona la reproducción de audio.
+ * Se eliminó la gestión de prioridades (vTaskPrioritySet) que causaba inestabilidad.
+ */
+void manejarReproduccionAudio() {
+  if (decodificadorMp3.isRunning()) {
+    // Llama al decodificador. Si devuelve 'false', la pista ha terminado.
+    if (!decodificadorMp3.loop()) {
+      decodificadorMp3.stop();
+      fuenteAudio.close();
+      reproduccionEnCurso = false; // Importantísimo: Bajar la bandera
+      Serial.println("Audio detenido y archivo cerrado.");
+      
+      if(servoAnguloActual != SERVO_NEUTRAL){
+        servoAnguloObjetivo = SERVO_NEUTRAL;
+        servoMoviendose = true;
+      }
+
+      if (archivoSiguiente.length() > 0) {
+          reproducirAudio(archivoSiguiente.c_str());
+          archivoSiguiente = "";
+      }
+    }
+  } else {
+    // Si no hay nada sonando, pero hay un archivo en cola, lo reproduce.
+    if (!reproduccionEnCurso && archivoAudioActual.length() > 0) {
+      reproducirAudio(archivoAudioActual.c_str());
+      archivoAudioActual = "";
+    }
+  }
+}
+
+void reproducirAudio(const char *ruta) {
+  if (reproduccionEnCurso) {
+      Serial.println("Advertencia: Se intento reproducir un audio mientras otro estaba en curso.");
+      return;
+  }
+
+  if (!SD.exists(ruta)) {
+    Serial.print("Archivo no encontrado: ");
+    Serial.println(ruta);
+    return;
+  }
+
+  if (!fuenteAudio.open(ruta)) {
+    Serial.print("Error al abrir el archivo: ");
+    Serial.println(ruta);
+    return;
+  }
+
+  Serial.print("Iniciando reproduccion de: ");
+  Serial.println(ruta);
+  reproduccionEnCurso = true; // Importantísimo: Subir la bandera
+  decodificadorMp3.begin(&fuenteAudio, &salidaI2S);
+}
