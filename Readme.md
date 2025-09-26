@@ -239,3 +239,15 @@ T¨¦cnicas de programaci¨®n no bloqueante
 
 Mejoras Futuras
 Implementar conexi¨®n WiFi para control remoto
+
+Cambios en V1.3
+Principales Mejoras Implementadas:
+Logica de Control Centralizada en loop(): Se reestructuro la funcion loop() para que actue como un controlador de estado. Ahora, el programa solo escucha nuevos comandos de voz (manejarModoOperacionNormal()) cuando el reproductor de MP3 no esta ocupado (!decodificadorMp3.isRunning()). Esto previene de forma efectiva que un nuevo comando interrumpa un audio en curso.
+
+Eliminacion de Banderas Redundantes: Se elimino la variable global reproduccionEnCurso. La funcion decodificadorMp3.isRunning() ya nos proporciona esta informacion de manera directa y fiable, simplificando el codigo y reduciendo posibles puntos de error.
+
+Llamadas Directas a reproducirAudio(): La funcion manejarModoOperacionNormal() ahora llama directamente a reproducirAudio() en lugar de simplemente asignar un nombre de archivo a una variable. Esto es posible porque ahora tenemos la certeza de que solo se entra en esa funcion cuando no hay nada reproduciendose.
+
+Simplificacion de reproducirAudio(): Se elimino la comprobacion inicial de la funcion, ya que la nueva logica en loop() garantiza que no sera llamada si ya hay un audio en curso.
+
+Manejo de Audio Consolidado: La logica que gestionaba la finalizacion de un audio se ha movido directamente al loop(), dentro de la seccion que se ejecuta cuando decodificadorMp3.isRunning() es verdadero. Esto hace que el flujo del programa sea mucho mas claro y facil de seguir.
