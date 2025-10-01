@@ -9,7 +9,7 @@
 #include <ESP32Servo.h>                   ///< Herramienta para controlar servomotores.
 
 // --- CONFIGURACIÓN GENERAL ---
-#define Version "1.3"                     ///< Versión mejorada del código.
+#define Version "1.2"                     ///< Versión mejorada del código.
 
 // --- CONFIGURACIÓN DE PINES ---
 // Módulo de voz
@@ -93,10 +93,86 @@ void mostrarInstruccionEntrenamiento();
 void iniciarParpadeoEntrenamiento(int registro);
 void iniciarParpadeo(int registro);
 
+/**
+ * @brief Devuelve la palabra asociada a un número de registro.
+ * @param registro El número del comando de voz.
+ * @retval La palabra asociada.
+ */
+String obtenerSignaturaRegistro(int registro) {
+  switch(registro) {
+    case 0: return "Jarvis";
+    case 1: return "Abrir";
+    case 2: return "Cerrar";
+    case 3: return "Diagnostico";
+    case 4: return "Me Amas";
+    case 5: return "Modo Ataque";
+    case 6: return "Musica";
+    case 7: return "Musica2";
+    case 8: return "Reactor On";
+    case 9: return "Comando Extra 1";
+    case 10: return "Comando Extra 2";
+    default: return "";
+  }
+}
 
-// ... (El resto de funciones como obtenerSignaturaRegistro, cargarRegistros, leerRespuestaModulo, etc., permanecen sin cambios) ...
-// ... (Se omiten por brevedad, ya que no fueron modificadas) ...
+/**
+ * @brief Carga los comandos de voz en el módulo en dos paquetes.
+ * @retval Devuelve 'true' si los mensajes de carga se enviaron.
+ */
+bool cargarRegistros() {
+    uint8_t bufferComando1[8] = {0x30, 0, 1, 2, 3, 4, 5, 6};
+    Serial.println("Enviando paquete 1 para cargar registros 0-6...");
+    miReconocedor.send_pkt(bufferComando1, 8);
+    delay(100);
+    leerRespuestaModulo();
 
+    uint8_t bufferComando2[5] = {0x30, 7, 8, 9, 10};
+    Serial.println("Enviando paquete 2 para cargar registros 7-10...");
+    miReconocedor.send_pkt(bufferComando2, 5);
+    delay(100);
+    leerRespuestaModulo();
+
+    Serial.println("Carga de todos los registros enviada.");
+    return true;
+}
+
+/**
+ * @brief Escucha y muestra las respuestas del módulo de voz en el monitor serial.
+ */
+void leerRespuestaModulo() {
+  uint8_t bufferRespuesta[400];
+  uint8_t longitudesPaquetes[32];
+  int longitudTotal = 0;
+  int indicePaquete = 0;
+  int resultadoRecepcion;
+  
+  while(true) {
+    resultadoRecepcion = miReconocedor.receive_pkt(bufferRespuesta + longitudTotal, 50);
+    if(resultadoRecepcion > 0) {
+      longitudTotal += resultadoRecepcion;
+      longitudesPaquetes[indicePaquete] = resultadoRecepcion;
+      indicePaquete++;
+    } else {
+      break;
+    }
+  }
+  
+  if(indicePaquete > 0) {
+    longitudTotal = 0;
+    for(int i = 0; i < indicePaquete; i++) {
+      Serial.print("< ");
+      miReconocedor.writehex(bufferRespuesta + longitudTotal, longitudesPaquetes[i]);
+      longitudTotal += longitudesPaquetes[i];
+      Serial.println();
+    }
+  } else {
+    Serial.println("No se recibio respuesta del modulo.");
+  }
+}
+
+/**
+ * @brief Función de configuración inicial que se ejecuta una sola vez.
+ */
 void setup() {
   Serial.begin(115200);
   pinMode(LED_INTERNO, OUTPUT);
@@ -252,13 +328,271 @@ void manejarModoOperacionNormal() {
         ejecutarSalidaPulsada(registro);
         reproducirAudio("/audio_reactor_on.mp3");
         break;
-      // ... otros casos
+      case 9: // "Comando Extra 1"
+        Serial.println("Comando reconocido: Comando Extra 1");
+        break;
+      case 10: // "Comando Extra 2"
+        Serial.println("Comando reconocido: Comando Extra 2");
+        break;
       default:
         Serial.println("Registro de comando no reconocido");
     }
   }
 }
 
+/**
+ * @brief Prepara todo para empezar a grabar los comandos de voz.
+ */
+void iniciarModoEntrenamiento() {
+  Serial.println(">>> Modo de entrenamiento activado <<<");
+  modoEntrenamiento = true;
+  registroActualEntrenamiento = 0;
+  confirmacionVisual = true;
+  parpadeando = false;
+  ultimoParpadeoMillis = millis();
+  intervaloParpadeo = INTERVALO_PARPADEO_RAPIDO;
+  Serial.println("Preparando para el entrenamiento...");
+  Serial.println("Por favor, espere el parpadeo rapido del LED interno...");
+}
+
+/**
+ * @brief Gestiona el proceso mientras estamos en modo entrenamiento.
+ */
+void manejarModoEntrenamiento() {
+  if (confirmacionVisual) {
+    if (millis() - ultimoParpadeoMillis >= TIEMPO_CONFIRMACION) {
+      confirmacionVisual = false;
+      Serial.println("Entrenamiento comenzando...");
+      mostrarInstruccionEntrenamiento();
+      inicioEsperaEntrenamiento = millis();
+      iniciarParpadeoEntrenamiento(registroActualEntrenamiento);
+    }
+    return;
+  }
+  
+  if (millis() - inicioEsperaEntrenamiento >= TIEMPO_ESPERA_ENTRENAMIENTO) {
+    Serial.println("Tiempo de espera agotado. Intentelo de nuevo.");
+    entrenarSiguienteRegistro(false);
+    return;
+  }
+
+  String signaturaActual = obtenerSignaturaRegistro(registroActualEntrenamiento);
+  int ret = miReconocedor.trainWithSignature(registroActualEntrenamiento, 
+                                   (uint8_t*)signaturaActual.c_str(), 
+                                   signaturaActual.length(), 
+                                   buf);
+  
+  if (ret >= 0) {
+    Serial.print("Entrenamiento del registro ");
+    Serial.print(registroActualEntrenamiento);
+    Serial.print(" ('");
+    Serial.print(signaturaActual);
+    Serial.println("') exitoso!");
+    entrenarSiguienteRegistro(true);
+  } else if (ret == -1) {
+    Serial.print("Fallo en el entrenamiento del registro "); 
+    Serial.print(registroActualEntrenamiento);
+    Serial.print(" ('");
+    Serial.print(signaturaActual);
+    Serial.println("'). Intentelo de nuevo.");
+    entrenarSiguienteRegistro(false);
+  }
+}
+
+/**
+ * @brief Muestra instrucciones para el usuario sobre qué palabra decir.
+ */
+void mostrarInstruccionEntrenamiento() {
+  String signatura = obtenerSignaturaRegistro(registroActualEntrenamiento);
+  Serial.print("Registro ");
+  Serial.print(registroActualEntrenamiento);
+  Serial.print(": Diga la palabra '");
+  Serial.print(signatura);
+  Serial.println("' cuando el LED se encienda.");
+}
+
+/**
+ * @brief Decide si pasar al siguiente comando a grabar o finalizar.
+ * @param exito Indica si la última grabación fue exitosa.
+ */
+void entrenarSiguienteRegistro(bool exito) {
+  if (exito) {
+      if (registroActualEntrenamiento < (NUM_REGISTROS - 1)) {
+          registroActualEntrenamiento++;
+          Serial.print("Preparando para entrenar el siguiente registro: ");
+          Serial.println(registroActualEntrenamiento);
+          delay(2000);
+          iniciarParpadeoEntrenamiento(registroActualEntrenamiento);
+          mostrarInstruccionEntrenamiento();
+      } else {
+          Serial.println("--- Entrenamiento de todos los registros finalizado con exito. ---");
+          for(int i=0; i<NUM_REGISTROS; i++){
+            Serial.print("- Registro "); Serial.print(i); Serial.print(": '");
+            Serial.print(obtenerSignaturaRegistro(i)); Serial.println("'");
+          }
+          finalizarModoEntrenamiento();
+          return;
+      }
+  } else {
+      Serial.print("Reiniciando entrenamiento del registro ");
+      Serial.println(registroActualEntrenamiento);
+      delay(1000);
+      iniciarParpadeoEntrenamiento(registroActualEntrenamiento);
+      mostrarInstruccionEntrenamiento();
+  }
+  
+  inicioEsperaEntrenamiento = millis();
+}
+
+/**
+ * @brief Termina el modo entrenamiento y vuelve al modo normal.
+ */
+void finalizarModoEntrenamiento() {
+  modoEntrenamiento = false;
+  parpadeando = false;
+  digitalWrite(LED_INTERNO, LOW);
+  Serial.println("Saliendo del modo de entrenamiento. Volviendo al modo de reconocimiento.");
+  delay(1000);
+  
+  Serial.println("Cargando registros entrenados para reconocimiento...");
+  if (cargarRegistros()) {
+    Serial.println("Registros cargados. El sistema esta listo.");
+  } else {
+    Serial.println("Error al cargar registros.");
+  }
+}
+
+/**
+ * @brief Inicia el parpadeo del LED para indicar que está escuchando durante el entrenamiento.
+ */
+void iniciarParpadeoEntrenamiento(int registro) {
+  parpadeosObjetivo = (registro + 1) * 2;
+  parpadeosRealizados = 0;
+  estadoLed = false;
+  digitalWrite(LED_INTERNO, LOW);
+  parpadeando = true;
+  ultimoParpadeoMillis = millis();
+  intervaloParpadeo = 1000;
+}
+
+/**
+ * @brief Inicia un parpadeo rápido para confirmar un comando reconocido.
+ */
+void iniciarParpadeo(int registro) {
+  parpadeosObjetivo = (registro + 1) * 2;
+  parpadeosRealizados = 0;
+  estadoLed = true;
+  digitalWrite(LED_INTERNO, HIGH);
+  parpadeando = true;
+  ultimoParpadeoMillis = millis();
+  intervaloParpadeo = 200;
+}
+
+/**
+ * @brief Gestiona el parpadeo del LED sin detener el programa.
+ */
+void actualizarParpadeo() {
+  if (!parpadeando) return;
+
+  unsigned long ahora = millis();
+  if (ahora - ultimoParpadeoMillis >= intervaloParpadeo) {
+    ultimoParpadeoMillis = ahora;
+    estadoLed = !estadoLed;
+    digitalWrite(LED_INTERNO, estadoLed ? HIGH : LOW);
+    parpadeosRealizados++;
+    if (parpadeosRealizados >= parpadeosObjetivo) {
+        parpadeando = false;
+        digitalWrite(LED_INTERNO, LOW);
+    }
+  }
+}
+
+/**
+ * @brief Enciende una salida y programa su apagado para 500 ms después.
+ */
+void ejecutarSalidaPulsada(int registro) {
+  unsigned long ahora = millis();
+  unsigned long tiempoApagado = ahora + 500;
+
+  switch (registro) {
+    case 0:
+      digitalWrite(SALIDA_0, HIGH);
+      salidaOffMillis[0] = tiempoApagado;
+      break;
+    case 1:
+      digitalWrite(SALIDA_1, HIGH);
+      salidaOffMillis[1] = tiempoApagado;
+      break;
+    case 2:
+      digitalWrite(SALIDA_2, HIGH);
+      salidaOffMillis[2] = tiempoApagado;
+      break;
+    case 8: // Reactor On
+      digitalWrite(SALIDA_REACTOR_ON, HIGH);
+      salidaOffMillis[8] = tiempoApagado;
+      break;
+  }
+}
+
+/**
+ * @brief Revisa si alguna de las salidas pulsadas debe ser apagada.
+ */
+void actualizarSalidas() {
+  unsigned long ahora = millis();
+
+  for(int i=0; i < NUM_REGISTROS; i++){
+    if (salidaOffMillis[i] && ahora >= salidaOffMillis[i]) {
+      switch(i){
+        case 0: digitalWrite(SALIDA_0, LOW); break;
+        case 1: digitalWrite(SALIDA_1, LOW); break;
+        case 2: digitalWrite(SALIDA_2, LOW); break;
+        case 8: digitalWrite(SALIDA_REACTOR_ON, LOW); break;
+      }
+      salidaOffMillis[i] = 0;
+    }
+  }
+}
+
+/**
+ * @brief Define el ángulo objetivo del servo para abrirse.
+ */
+void iniciarMovimientoServoAbrir() {
+  servoAnguloObjetivo = constrain(SERVO_NEUTRAL + 60, 0, 180);
+  servoMoviendose = true;
+  ultimoMovimientoServoMillis = millis();
+}
+
+/**
+ * @brief Define el ángulo objetivo del servo para cerrarse.
+ */
+void iniciarMovimientoServoCerrar() {
+  servoAnguloObjetivo = constrain(SERVO_NEUTRAL - 60, 0, 180);
+  servoMoviendose = true;
+  ultimoMovimientoServoMillis = millis();
+}
+
+/**
+ * @brief Mueve el servo gradualmente hacia su ángulo objetivo.
+ */
+void actualizarServo() {
+  if (!servoMoviendose) return;
+
+  unsigned long ahora = millis();
+  if (ahora - ultimoMovimientoServoMillis < SERVO_STEP_MS) return;
+
+  ultimoMovimientoServoMillis = ahora;
+  if (servoAnguloActual < servoAnguloObjetivo) {
+    servoAnguloActual = min(servoAnguloObjetivo, servoAnguloActual + SERVO_STEP_DEG);
+    servo.write(servoAnguloActual);
+  } else if (servoAnguloActual > servoAnguloObjetivo) {
+    servoAnguloActual = max(servoAnguloObjetivo, servoAnguloActual - SERVO_STEP_DEG);
+    servo.write(servoAnguloActual);
+  }
+
+  if (servoAnguloActual == servoAnguloObjetivo) {
+    servoMoviendose = false;
+  }
+}
 
 /**
  * @brief Abre un archivo MP3 y lo reproduce.
