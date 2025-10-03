@@ -1,344 +1,93 @@
-Proyecto de Control por Voz con ESP32 y Reconocimiento de Voz VR3
-Introducción
-Este proyecto implementa un sistema de control por voz utilizando un módulo ESP32, un módulo de reconocimiento de voz VR3 de ELECHOUSE, una tarjeta SD para almacenamiento de archivos de audio, y un servomotor para control físico. El sistema permite ejecutar comandos como "Abrir" y "Cerrar" mediante reconocimiento de voz, con capacidad de entrenamiento personalizado y retroalimentación auditiva.
+# **Proyecto: M贸dulo de Voz Interactivo v1.4 con ESP32**
 
-Componentes Requeridos
-ESP32 (placa de desarrollo)
+## **1\. Descripci贸n General**
 
-Módulo de reconocimiento de voz VR3 (ELECHOUSE V3)
+Este proyecto consiste en un sistema interactivo controlado por voz basado en el microcontrolador ESP32. El dispositivo es capaz de reconocer comandos de voz predefinidos, reproducir archivos de audio MP3 desde una tarjeta SD, controlar salidas digitales y mover un servomotor de manera precisa y con memoria de estado.
 
-Módulo lector de tarjetas SD
+La caracter铆stica principal de esta versi贸n es su arquitectura robusta, que utiliza una **m谩quina de estados** para gestionar las tareas, garantizando que operaciones cr铆ticas como la reproducci贸n de audio se completen sin interrupciones. Adem谩s, incluye un **modo de entrenamiento** que permite al usuario grabar su propia voz para los comandos, aumentando significativamente la precisi贸n del reconocimiento.
 
-Servomotor (SG90 o similar)
+## **2\. Caracter铆sticas Principales**
 
-LED indicador
-
-Resistencias (220Ω para LED)
-
-Cables de conexión
-
-Tarjeta microSD (formateada en FAT32)
-
-Fuente de alimentación (5V/2A recomendado)
-
-Diagrama de Conexiones
-Diagram
-Code
-graph TD
-    subgraph ESP32
-        A[GPIO16 - RX2] --> B[VR3 TX]
-        C[GPIO17 - TX2] --> D[VR3 RX]
-        E[GPIO5 - CS] --> F[SD Card CS]
-        G[GPIO23 - MOSI] --> H[SD Card MOSI]
-        I[GPIO19 - MISO] --> J[SD Card MISO]
-        K[GPIO18 - SCK] --> L[SD Card SCK]
-        M[GPIO32] --> N[Servo Signal]
-        O[GPIO25] --> P[Salida 0 - LED]
-        Q[GPIO34] --> R[Botón Entrenamiento]
-    end
-
-    subgraph Módulo VR3
-        B -->|Serial| VR3
-        D -->|Serial| VR3
-        VR3 -->|VCC| 5V
-        VR3 -->|GND| GND
-    end
-
-    subgraph Módulo SD
-        F --> SD
-        H --> SD
-        J --> SD
-        L --> SD
-        SD -->|VCC| 3.3V
-        SD -->|GND| GND
-    end
-
-    subgraph Servomotor
-        N --> Servo
-        Servo -->|VCC| 5V
-        Servo -->|GND| GND
-    end
-Instalación de Software
-Requisitos Previos
-Arduino IDE (versión 1.8.x o superior)
-
-Plataforma ESP32 (instalada via Arduino Board Manager)
-
-Bibliotecas Requeridas:
-
-VoiceRecognitionV3
-
-ESP32Servo
-
-AudioFileSourceSD
-
-AudioGeneratorMP3
-
-AudioOutputI2SNoDAC
-
-Configuración del Entorno
-Instalar las bibliotecas desde Gestor de Bibliotecas (Sketch > Incluir Biblioteca > Administrar Bibliotecas)
-
-Seleccionar la placa ESP32 Dev Module en Herramientas > Placa
-
-Configurar los parámetros:
-
-Upload Speed: 921600
-
-Flash Frequency: 80MHz
-
-Partition Scheme: Default 4MB
-
-Preparación de Archivos de Audio
-Formatear tarjeta SD como FAT32
-
-Crear archivos MP3 con nombres específicos:
-
-/jarvis.mp3 - Audio para comando "Jarvis"
-
-/abrir.mp3 - Audio para comando "Abrir"
-
-/cerrar.mp3 - Audio para comando "Cerrar"
-
-Colocar los archivos en la raíz de la SD
-
-Funcionamiento del Sistema
-Modo Normal de Operación
-Al iniciar, el sistema carga los comandos predeterminados:
-
-Registro 0: "Jarvis" (activación)
-
-Registro 1: "Abrir" (abre servo)
-
-Registro 2: "Cerrar" (cierra servo)
-
-Al detectar un comando:
-
-Reproduce el audio correspondiente
-
-Mueve el servomotor
-
-Parpadea el LED según el comando
-
-Modo Entrenamiento
-Activación:
-
-Mantener pulsado el botón de entrenamiento (GPIO34) por 3 segundos
-
-O enviar "entrenar" por monitor serial
-
-Proceso:
-
-Sistema guía mediante parpadeos LED
-
-Entrena cada comando secuencialmente
-
-Confirma con parpadeo rápido
-
-Comandos personalizables:
-
-Registro 0: Palabra de activación
-
-Registro 1: Comando para abrir
-
-Registro 2: Comando para cerrar
-
-Estructura del Código
-Funciones Principales
-cpp
-// Configuración inicial
-void setup() {
-  // Inicializa periféricos y módulos
-}
-
-// Bucle principal
-void loop() {
-  // Gestiona modos operación/entrenamiento
-  // Actualiza tareas no bloqueantes
-}
-
-// Gestión de audio
-void manejarReproduccionAudio() {
-  // Controla reproducción MP3
-}
-
-// Movimiento de servo
-void actualizarServo() {
-  // Control suave no bloqueante
-}
-
-// Entrenamiento de comandos
-void manejarModoEntrenamiento() {
-  // Guía al usuario en el proceso
-}
-Variables Clave
-modoEntrenamiento: Bandera de estado
-
-servoAnguloObjetivo: Posición destino del servo
-
-parpadeando: Control de retroalimentación visual
-
-archivoAudioActual: Audio a reproducir
-
-registroActualEntrenamiento: Comando en entrenamiento
-
-Programación No Bloqueante
-El sistema utiliza técnicas de programación no bloqueante para gestionar múltiples tareas simultáneamente:
-
-Control de servo: Movimiento gradual mediante millis()
-
-Parpadeo LED: Temporización precisa sin delay()
-
-Reproducción audio: Flujo continuo con gestión de buffers
-
-Detección comandos: Escucha constante sin interrupciones
-
-Solución de Problemas
-Problemas Comunes
-Módulo VR3 no responde:
-
-Verificar conexiones RX/TX
-
-Comprobar LED amarillo en módulo
-
-Asegurar alimentación estable
-
-SD no detectada:
-
-Revisar formato (FAT32)
-
-Verificar conexión SPI
-
-Probar con otra tarjeta
-
-Servo no se mueve:
-
-Comprobar conexión de 5V
-
-Verificar se?al en osciloscopio
-
-Revisar rango de movimiento (0-180°)
-
-Mensajes de Error
-"Tarjeta SD no encontrada": Revisar conexiones
-
-"Archivo no encontrado": Verificar nombres en SD
-
-"Fallo en entrenamiento": Repetir en ambiente silencioso
-
-Aplicaciones Educativas
-Introducción a sistemas embebidos
-
-Programación de interfaces de voz
-
-Control de actuadores mecánicos
-
-Gestión de sistemas de archivos
-
-Técnicas de programación no bloqueante
-
-Mejoras Futuras
-Implementar conexión WiFi para control remoto
-
-Cambios en V1.3
-Principales Mejoras Implementadas:
-Logica de Control Centralizada en loop(): Se reestructuro la funcion loop() para que actue como un controlador de estado. Ahora, el programa solo escucha nuevos comandos de voz (manejarModoOperacionNormal()) cuando el reproductor de MP3 no esta ocupado (!decodificadorMp3.isRunning()). Esto previene de forma efectiva que un nuevo comando interrumpa un audio en curso.
-
-Eliminacion de Banderas Redundantes: Se elimino la variable global reproduccionEnCurso. La funcion decodificadorMp3.isRunning() ya nos proporciona esta informacion de manera directa y fiable, simplificando el codigo y reduciendo posibles puntos de error.
-
-Llamadas Directas a reproducirAudio(): La funcion manejarModoOperacionNormal() ahora llama directamente a reproducirAudio() en lugar de simplemente asignar un nombre de archivo a una variable. Esto es posible porque ahora tenemos la certeza de que solo se entra en esa funcion cuando no hay nada reproduciendose.
-
-Simplificacion de reproducirAudio(): Se elimino la comprobacion inicial de la funcion, ya que la nueva logica en loop() garantiza que no sera llamada si ya hay un audio en curso.
-
-Manejo de Audio Consolidado: La logica que gestionaba la finalizacion de un audio se ha movido directamente al loop(), dentro de la seccion que se ejecuta cuando decodificadorMp3.isRunning() es verdadero. Esto hace que el flujo del programa sea mucho mas claro y facil de seguir.
-
-# **Proyecto: Modulo de Voz Interactivo v1.3 con ESP32**
-
-\!\[\]
-
-## **1\. Descripcion General**
-
-Este proyecto consiste en un sistema interactivo controlado por voz basado en el microcontrolador ESP32. El dispositivo es capaz de reconocer comandos de voz predefinidos, reproducir archivos de audio MP3 desde una tarjeta SD, controlar salidas digitales y mover un servomotor de manera precisa.
-
-La caracteristica principal de esta version es su arquitectura robusta, que utiliza una **maquina de estados** para gestionar las tareas, garantizando que operaciones criticas como la reproduccion de audio se completen sin interrupciones. Ademas, incluye un **modo de entrenamiento** que permite al usuario grabar su propia voz para los comandos, aumentando significativamente la precision del reconocimiento.
-
-## **2\. Caracteristicas Principales**
-
-* **Reconocimiento de Voz**: Utiliza el modulo Voice Recognition V3 para procesar hasta 11 comandos de voz diferentes.  
-* **Reproduccion de Audio MP3**: Reproduce archivos de audio de alta calidad desde una tarjeta SD a traves del protocolo I2S.  
-* **Gestion de Tareas sin Interrupciones**: Una maquina de estados en el bucle principal prioriza la reproduccion de audio, evitando que nuevos comandos la corten.  
+* **Reconocimiento de Voz**: Utiliza el m贸dulo Voice Recognition V3 para procesar hasta 11 comandos de voz diferentes.  
+* **Reproducci贸n de Audio MP3**: Reproduce archivos de audio de alta calidad desde una tarjeta SD a trav茅s del protocolo I2S.  
+* **Gesti贸n de Tareas sin Interrupciones**: Una m谩quina de estados en el bucle principal prioriza la reproducci贸n de audio, evitando que nuevos comandos la corten.  
 * **Control de Actuadores**:  
-  * **Servomotor**: Control suave y no bloqueante para movimientos precisos.  
-  * **Salidas Digitales**: Activacion de LEDs o reles en respuesta a comandos de voz.  
+  * **Servomotor con Estado**: Control suave y no bloqueante para movimientos precisos entre una posici贸n abierta y una cerrada, manteniendo el estado hasta recibir un nuevo comando.  
+  * **Salidas Digitales**: Activaci贸n de LEDs o rel茅s en respuesta a comandos de voz.  
 * **Modo de Entrenamiento Personalizado**: Permite al usuario grabar su propia voz para cada comando, mejorando la fiabilidad del sistema.  
-* **Feedback Visual**: Un LED integrado proporciona informacion sobre el estado del sistema (escuchando, procesando, entrenando).  
-* **Codigo Altamente Comentado**: El firmware esta documentado en detalle para facilitar su comprension y modificacion.
+* **Feedback Visual**: Un LED integrado proporciona informaci贸n sobre el estado del sistema (escuchando, procesando, entrenando).  
+* **C贸digo Altamente Comentado**: El firmware est谩 documentado en detalle para facilitar su comprensi贸n y modificaci贸n.
 
-## **3\. Cambios y Mejoras (Version 1.2 / 1.3)**
+## **3\. Cambios y Mejoras**
 
-La mejora fundamental respecto a versiones anteriores es la reestructuracion completa del bucle principal (loop()) para que funcione como un **controlador de estados**.
+### **Versi贸n 1.2 / 1.3: Implementaci贸n de la M谩quina de Estados de Audio**
 
-### **Version Anterior (Problematica)**
+La mejora fundamental inicial fue la reestructuraci贸n completa del bucle principal (loop()) para que funcione como un **controlador de estados**.
 
-En la version original, el programa intentaba escuchar nuevos comandos de voz constantemente, incluso mientras un archivo de audio se estaba reproduciendo. Esto llevaba a una condicion de carrera: si se reconocia un nuevo comando a mitad de una reproduccion, la logica de audio se interrumpia bruscamente para procesar el nuevo comando, cortando el sonido.
+* **Problema Anterior**: El programa intentaba escuchar nuevos comandos constantemente. Si se reconoc铆a un nuevo comando mientras un audio se estaba reproduciendo, la reproducci贸n se interrump铆a bruscamente.  
+* **Soluci贸n Implementada**: Se implement贸 una l贸gica de estados claros:  
+  1. **Estado de Reposo/Escucha**: Si no hay ninguna tarea cr铆tica en ejecuci贸n, el sistema se dedica a escuchar un nuevo comando de voz.  
+  2. **Estado de Reproducci贸n de Audio**: En cuanto se inicia la reproducci贸n, el sistema **deja de escuchar nuevos comandos** y se enfoca en mantener la reproducci贸n fluida hasta que termine.  
+  3. **Transici贸n de Estados**: Al finalizar el audio, el sistema regresa autom谩ticamente al estado de escucha.
 
-### **Nueva Version (Solucion Implementada)**
+### **Versi贸n 1.4: Nuevo Control de Servo con Memoria de Estado**
 
-La version actual soluciona este problema implementando una logica de estados claros y excluyentes:
+En esta versi贸n, se ha mejorado la l贸gica de control del servomotor para que sea m谩s intuitiva y funcional.
 
-1. **Estado de Reposo/Escucha**: Si no hay ninguna tarea critica en ejecucion (como reproducir un audio), el sistema se dedica a escuchar un nuevo comando de voz (manejarModoOperacionNormal()).  
-2. **Estado de Reproduccion de Audio**: En cuanto se inicia la reproduccion de un audio (reproducirAudio()), la condicion decodificadorMp3.isRunning() se vuelve verdadera. El bucle principal detecta este estado y **deja de escuchar nuevos comandos**. Toda la atencion del procesador se centra en mantener la reproduccion fluida hasta que el archivo termine.  
-3. **Transicion de Estados**: Una vez que el audio finaliza, decodificadorMp3.isRunning() se vuelve falso, y el sistema regresa automaticamente al **Estado de Reposo/Escucha**, listo para recibir el siguiente comando.
+* **Problema Anterior**: El servo realizaba un movimiento y luego, en algunas l贸gicas, volv铆a a una posici贸n neutral autom谩ticamente. El movimiento no era persistente.  
+* **Soluci贸n Implementada**:  
+  1. **Dos Estados Definidos**: Se crearon dos posiciones fijas: SERVO\_CERRADO (0 grados) y SERVO\_ABIERTO (90 grados).  
+  2. **Movimiento por Comando**: El comando "Abrir" mueve el servo a la posici贸n de 90 grados. El comando "Cerrar" lo mueve a la posici贸n de 0 grados.  
+  3. **Persistencia de Estado**: El cambio m谩s importante es que el servo ahora **permanece en su 煤ltima posici贸n comandada** (abierto o cerrado) indefinidamente, hasta que se recibe el comando opuesto. Se elimin贸 cualquier l贸gica que lo devolviera a un estado neutral de forma autom谩tica.
 
-Este cambio garantiza una experiencia de usuario mucho mas profesional y predecible, donde cada accion se completa en su totalidad antes de iniciar la siguiente.
+Este cambio permite que el servo act煤e como un interruptor mec谩nico (por ejemplo, para mantener una compuerta abierta o cerrada) en lugar de realizar solo un movimiento moment谩neo.
 
-## **4\. Diagrama de Flujo del Programa**
+## **4\. Diagrama de Conexiones**
 
-El siguiente diagrama ilustra la logica de la maquina de estados implementada en la funcion loop() principal.
+A continuaci贸n se muestra la tabla de conexiones recomendada entre el ESP32 y los m贸dulos perif茅ricos.
+
+| Pin ESP32 | Conectar a | M贸dulo | Notas |
+| :---- | :---- | :---- | :---- |
+| **VIN (5V)** | VCC | Todos los M贸dulos | Alimentaci贸n principal. Usar fuente externa si el consumo es alto. |
+| **GND** | GND | Todos los M贸dulos | Tierra com煤n. Es crucial que todas las tierras est茅n conectadas. |
+| **GPIO 17 (TX2)** | RX | M贸dulo de Voz V3 | Transmisi贸n del ESP32 a la Recepci贸n del M贸dulo de Voz. |
+| **GPIO 16 (RX2)** | TX | M贸dulo de Voz V3 | Recepci贸n del ESP32 desde la Transmisi贸n del M贸dulo de Voz. |
+| **GPIO 22** | BCLK | Amplificador I2S (MAX98357A) | Bit Clock para la comunicaci贸n de audio. |
+| **GPIO 21** | LRC / WS | Amplificador I2S (MAX98357A) | Left/Right Clock (Word Select) para audio. |
+| **GPIO 19** | DIN / SD | Amplificador I2S (MAX98357A) | Data In para la se帽al de audio. |
+| **GPIO 23 (MOSI)** | DI / MOSI | Lector de Tarjeta SD | Master Out Slave In para la comunicaci贸n SPI. |
+| **GPIO 18 (SCK)** | CLK / SCK | Lector de Tarjeta SD | Serial Clock para la comunicaci贸n SPI. |
+| **GPIO 5 (CS)** | CS | Lector de Tarjeta SD | Chip Select para activar la comunicaci贸n con la SD. |
+| **GPIO 32** | Se帽al (Naranja/Amarillo) | Servomotor SG90 | Pin de control para la posici贸n del servo. |
+| **GPIO 2** | \- | LED Interno | Usado para feedback visual. |
+| **GPIO 25, 26, 27, 33** | \- | Salidas Digitales | Disponibles para conectar LEDs externos, rel茅s, etc. |
+
+## **5\. Diagrama de Flujo del Programa**
+
+El siguiente diagrama ilustra la l贸gica de la m谩quina de estados implementada en la funci贸n loop() principal.
 
 graph TD  
     A\[Inicio del Bucle \`loop()\`\] \--\> B{Tareas de Fondo (Parpadeo, Servo, Salidas)};  
-    B \--\> C{?Comando "entrenar" por Serial?};  
-    C \-- Si \--\> D\[Activar Modo Entrenamiento\];  
-    C \-- No \--\> E{?Modo Entrenamiento Activo?};  
-    E \-- Si \--\> F\[Ejecutar \`manejarModoEntrenamiento()\`\];  
+    B \--\> C{驴Comando "entrenar" por Serial?};  
+    C \-- S铆 \--\> D\[Activar Modo Entrenamiento\];  
+    C \-- No \--\> E{驴Modo Entrenamiento Activo?};  
+    E \-- S铆 \--\> F\[Ejecutar \`manejarModoEntrenamiento()\`\];  
     F \--\> G\[Fin del Ciclo, Volver a A\];  
-    E \-- No \--\> H{?Audio en Reproduccion? (\`decodificadorMp3.isRunning()\`)};  
-    H \-- Si \--\> I\[Gestionar Audio: Aumentar Prioridad\];  
-    I \--\> J{?Audio Finalizado?};  
+    E \-- No \--\> H{驴Audio en Reproducci贸n? (\`decodificadorMp3.isRunning()\`)};  
+    H \-- S铆 \--\> I\[Gestionar Audio: Aumentar Prioridad\];  
+    I \--\> J{驴Audio Finalizado?};  
     J \-- No \--\> G;  
-    J \-- Si \--\> K\[Detener Audio y Restaurar Prioridad\];  
-    K \--\> L{?Hay audio en cola?};  
-    L \-- Si \--\> M\[Reproducir Siguiente Audio\];  
+    J \-- S铆 \--\> K\[Detener Audio y Restaurar Prioridad\];  
+    K \--\> L{驴Hay audio en cola?};  
+    L \-- S铆 \--\> M\[Reproducir Siguiente Audio\];  
     L \-- No \--\> G;  
     M \--\> G;  
     H \-- No \--\> N\[Estado de Escucha: \`manejarModoOperacionNormal()\`\];  
     N \--\> G;
 
-## **5\. Componentes y Conexiones**
-
-### **Hardware Requerido**
-
-* Microcontrolador ESP32 DevKitC V4 (o similar).  
-* Modulo de Reconocimiento de Voz V3.  
-* Modulo reproductor de MP3 con amplificador (ej. MAX98357A I2S).  
-* Lector de tarjetas MicroSD.  
-* Tarjeta MicroSD (formateada en FAT32).  
-* Servomotor (ej. SG90).  
-* Altavoz (3W, 4-8 Ohm).  
-* Fuente de alimentacion externa (5V, 2A recomendada).  
-* Cables, protoboard y componentes pasivos (resistencias, si son necesarias).
-
-### **Librerias de Arduino**
-
-Asegurate de tener instaladas las siguientes librerias a traves del Gestor de Librerias del IDE de Arduino:
-
-* ESP32Servo por Kevin Harrington  
-* ESP8266Audio por Earle F. Philhower (funciona tambien para ESP32)
-
 ## **6\. Estructura de la Tarjeta SD**
 
-Para que el programa funcione correctamente, crea los siguientes archivos de audio en formato MP3 y colocalos en la raiz de la tarjeta MicroSD:
+Para que el programa funcione correctamente, crea los siguientes archivos de audio en formato MP3 y col贸calos en la ra铆z de la tarjeta MicroSD:
 
 * /jarvis.mp3  
 * /abrir.mp3  
@@ -353,32 +102,32 @@ Para que el programa funcione correctamente, crea los siguientes archivos de aud
 
 ## **7\. Modo de Uso**
 
-### **Operacion Normal**
+### **Operaci贸n Normal**
 
-1. Alimenta el circuito. El ESP32 se iniciara y cargara los comandos de voz.  
-2. El monitor serial mostrara "Dispositivo listo. Esperando comandos...".  
-3. Di uno de los comandos entrenados. El sistema ejecutara la accion correspondiente.
+1. Alimenta el circuito. El ESP32 se iniciar谩 y cargar谩 los comandos de voz.  
+2. El monitor serial mostrar谩 "Dispositivo listo. Esperando comandos...".  
+3. Di uno de los comandos entrenados. El sistema ejecutar谩 la acci贸n correspondiente.
 
 ### **Modo de Entrenamiento**
 
 1. Conecta el ESP32 a tu ordenador y abre el Monitor Serial (velocidad 115200).  
 2. Escribe la palabra entrenar en la caja de texto del monitor y presiona Enter.  
-3. Sigue las instrucciones que apareceran en el monitor. El sistema te pedira que digas cada una de las palabras de los comandos para grabarlas con tu voz.  
-4. Una vez finalizado, el sistema volvera al modo de operacion normal, utilizando las nuevas grabaciones.
+3. Sigue las instrucciones que aparecer谩n en el monitor. El sistema te pedir谩 que digas cada una de las palabras de los comandos para grabarlas con tu voz.  
+4. Una vez finalizado, el sistema volver谩 al modo de operaci贸n normal, utilizando las nuevas grabaciones.
 
 ### **Tabla de Comandos y Acciones**
 
-| Registro | Comando de Voz | Accion del Sistema | Archivo de Audio Asociado |
+| Registro | Comando de Voz | Acci贸n del Sistema | Archivo de Audio Asociado |
 | :---- | :---- | :---- | :---- |
 | 0 | "Jarvis" | Activa SALIDA\_0 por 500ms. | /jarvis.mp3 |
-| 1 | "Abrir" | Activa SALIDA\_1 y mueve el servo a la posicion abierta. | /abrir.mp3 |
-| 2 | "Cerrar" | Activa SALIDA\_2 y mueve el servo a la posicion cerrada. | /cerrar.mp3 |
+| 1 | "Abrir" | Activa SALIDA\_1 y mueve el servo a la posici贸n abierta (90掳). | /abrir.mp3 |
+| 2 | "Cerrar" | Activa SALIDA\_2 y mueve el servo a la posici贸n cerrada (0掳). | /cerrar.mp3 |
 | 3 | "Diagnostico" | Solo reproduce audio. | /audio\_diagnostico.mp3 |
 | 4 | "Me Amas" | Solo reproduce audio. | /audio\_me\_amas.mp3 |
 | 5 | "Modo Ataque" | Solo reproduce audio. | /audio\_modo\_ataque.mp3 |
-| 6 | "Musica" | Reproduce intro y luego la cancion 1\. | /audio\_pre\_musica.mp3 |
-| 7 | "Musica2" | Reproduce intro y luego la cancion 2\. | /audio\_pre\_musica.mp3 |
+| 6 | "Musica" | Reproduce intro y luego la canci贸n 1\. | /audio\_pre\_musica.mp3 |
+| 7 | "Musica2" | Reproduce intro y luego la canci贸n 2\. | /audio\_pre\_musica.mp3 |
 | 8 | "Reactor On" | Activa SALIDA\_REACTOR\_ON por 500ms. | /audio\_reactor\_on.mp3 |
-| 9 | "Comando Extra 1" | Sin accion definida (personalizable). | N/A |
-| 10 | "Comando Extra 2" | Sin accion definida (personalizable). | N/A |
+| 9 | "Comando Extra 1" | Sin acci贸n definida (personalizable). | N/A |
+| 10 | "Comando Extra 2" | Sin acci贸n definida (personalizable). | N/A |
 
